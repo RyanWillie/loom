@@ -1,0 +1,64 @@
+# Build directories
+build/
+build-*/
+.cache/
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# Docker
+.devcontainer/
+docker/
+Dockerfile*
+.dockerignore
+
+# Documentation
+*.md
+docs/
+
+# Data files (if large)
+data/*.gz
+data/*.zip
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs and temporary files
+*.log
+*.tmp
+*.temp
+
+# Compiled files
+*.o
+*.obj
+*.so
+*.dylib
+*.dll
+*.exe
+
+# Test files (optional - comment out if you want tests in Docker)
+# tests/
+
+# CMake generated files
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+compile_commands.json
+CTestTestfile.cmake
+Makefile
+
+# Package manager files
+*.tar.gz
+*.zip
+*.7z
+

@@ -1,0 +1,72 @@
+{
+    "name": "MNIST Neural Network Dev Container",
+    "dockerFile": "../docker/Dockerfile.cpu",
+    
+    // Set workspace mount point
+    "workspaceFolder": "/workspace",
+    "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind,consistency=cached",
+    
+    // Configure tool-specific properties
+    "customizations": {
+        "vscode": {
+            // Extensions to install
+            "extensions": [
+                "ms-vscode.cpptools",
+                "ms-vscode.cmake-tools",
+                "ms-vscode.cpptools-extension-pack",
+                "llvm-vs-code-extensions.vscode-clangd",
+                "xaver.clang-format",
+                "notskm.clang-tidy",
+                "twxs.cmake",
+                "vadimcn.vscode-lldb"
+            ],
+            
+            // Settings
+            "settings": {
+                "terminal.integrated.defaultProfile.linux": "bash",
+                "cmake.configureOnOpen": false,
+                "cmake.generator": "Ninja",
+                "C_Cpp.default.compileCommands": "${workspaceFolder}/compile_commands.json",
+                "C_Cpp.clang_format_style": "file",
+                "editor.formatOnSave": true
+            }
+        }
+    },
+    
+    // Forward ports (if needed for web interfaces or debugging)
+    "forwardPorts": [],
+    
+    // Use 'postCreateCommand' to run commands after the container is created
+    "postCreateCommand": "git config --global --add safe.directory /workspace",
+    
+    // Use 'postStartCommand' to run commands after the container starts
+    "postStartCommand": "",
+    
+    // Comment out to connect as root instead
+    "remoteUser": "root",
+    
+    // Features to add to the dev container
+    "features": {
+        "ghcr.io/devcontainers/features/git:1": {
+            "version": "latest"
+        }
+    },
+    
+    // Container environment variables
+    "containerEnv": {
+        "ASAN_OPTIONS": "detect_leaks=1:fast_unwind_on_malloc=0",
+        "UBSAN_OPTIONS": "print_stacktrace=1"
+    },
+    
+    // Run arguments for Docker
+    "runArgs": [
+        "--cap-add=SYS_PTRACE",
+        "--security-opt",
+        "seccomp=unconfined"
+    ],
+    
+    // Mount the source directory
+    "mounts": [
+        "source=/var/run/docker.sock,target=/var/run/docker.sock,type=bind"
+    ]
+}
