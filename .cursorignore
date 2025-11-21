@@ -1,0 +1,20 @@
+# Build directories
+build/
+build-*/
+
+# Compiled outputs
+bin/
+lib/
+
+# CMake generated files
+compile_commands.json
+
+# Logs (hide individual log files but show directory)
+logs/*.txt
+
+# Data files
+data/
+
+# IDE
+.DS_Store
+
