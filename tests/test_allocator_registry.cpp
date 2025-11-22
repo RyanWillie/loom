@@ -3,9 +3,9 @@
 #include <vector>
 
 #include "common/device.h"
+#include "common/memory/allocator.h"
 #include "common/registry/allocator_registry.h"
-#include "common/tensor/allocator.h"
-#include "cpu/cpu_allocator.h"
+#include "cpu/pooling_allocator.h"
 #include <gtest/gtest.h>
 
 using namespace loom;
@@ -26,7 +26,7 @@ class AllocatorRegistryTest : public ::testing::Test {
 // Basic Registry Operations Tests
 // ============================================================================
 
-TEST_F(AllocatorRegistryTest, GetCreatesDefaultCPUAllocator) {
+TEST_F(AllocatorRegistryTest, GetCreatesDefaultPoolingAllocator) {
     Device cpu_device(DeviceType::CPU);
 
     // Registry should create default CPU allocator on first access
@@ -70,8 +70,8 @@ TEST_F(AllocatorRegistryTest, SetCustomAllocator) {
     Device cpu_device(DeviceType::CPU);
 
     // Create and set a custom allocator
-    CPUAllocatorConfig config{.alignment = 64};
-    auto custom_allocator = std::make_shared<CPUAllocator>(config);
+    PoolingAllocatorConfig config{.alignment = 64};
+    auto custom_allocator = std::make_shared<PoolingAllocator>(config);
 
     AllocatorRegistry::set(cpu_device, custom_allocator);
 
@@ -89,7 +89,7 @@ TEST_F(AllocatorRegistryTest, SetReplacesExistingAllocator) {
     auto default_allocator = AllocatorRegistry::get(cpu_device);
 
     // Set a new custom allocator
-    auto custom_allocator = std::make_shared<CPUAllocator>();
+    auto custom_allocator = std::make_shared<PoolingAllocator>();
     AllocatorRegistry::set(cpu_device, custom_allocator);
 
     // Should now get the custom allocator
@@ -106,7 +106,7 @@ TEST_F(AllocatorRegistryTest, DifferentDevicesHaveDifferentAllocators) {
     Device cpu_device(DeviceType::CPU);
     Device cuda_device_0(DeviceType::CUDA, 0);
 
-    auto cpu_allocator = std::make_shared<CPUAllocator>();
+    auto cpu_allocator = std::make_shared<PoolingAllocator>();
     AllocatorRegistry::set(cpu_device, cpu_allocator);
 
     // CUDA device should not exist yet
@@ -118,7 +118,7 @@ TEST_F(AllocatorRegistryTest, DifferentCUDAIndicesAreSeparate) {
     Device cuda_0(DeviceType::CUDA, 0);
     Device cuda_1(DeviceType::CUDA, 1);
 
-    auto allocator_0 = std::make_shared<CPUAllocator>();  // Using CPU allocator as placeholder
+    auto allocator_0 = std::make_shared<PoolingAllocator>();  // Using CPU allocator as placeholder
     AllocatorRegistry::set(cuda_0, allocator_0);
 
     EXPECT_TRUE(AllocatorRegistry::exists(cuda_0));
@@ -136,7 +136,7 @@ TEST_F(AllocatorRegistryTest, ClearRemovesAllAllocators) {
     // Add some allocators
     auto cpu_allocator = AllocatorRegistry::get(cpu_device);
     EXPECT_NE(cpu_allocator, nullptr);
-    auto cuda_allocator = std::make_shared<CPUAllocator>();
+    auto cuda_allocator = std::make_shared<PoolingAllocator>();
     AllocatorRegistry::set(cuda_device, cuda_allocator);
 
     EXPECT_TRUE(AllocatorRegistry::exists(cpu_device));

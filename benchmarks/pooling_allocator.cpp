@@ -5,23 +5,22 @@
  *
  * Compare performance of different allocator implementations:
  * - BasicAllocator: Simple malloc/free wrapper
- * - CPUAllocator: Advanced allocator with pooling (when implemented)
+ * - PoolingAllocator: Advanced allocator with pooling (when implemented)
  *
  * Add your own benchmarks here following the pattern below.
  */
 
-#include "cpu/cpu_allocator.h"
-
 #include "common/device.h"
 #include "cpu/basic_allocator.h"
+#include "cpu/pooling_allocator.h"
 #include <benchmark/benchmark.h>
 
 using namespace loom;
 
 //! Single Allocation Benchmarks
 
-static void BM_CPUAllocator_SingleAlloc_64B(benchmark::State& state) {
-    CPUAllocator allocator;  // Use default constructor
+static void BM_PoolingAllocator_SingleAlloc_64B(benchmark::State& state) {
+    PoolingAllocator allocator;  // Use default constructor
 
     for (auto _ : state) {
         void* ptr = allocator.allocate(64);
@@ -29,10 +28,10 @@ static void BM_CPUAllocator_SingleAlloc_64B(benchmark::State& state) {
         allocator.deallocate(ptr);
     }
 }
-BENCHMARK(BM_CPUAllocator_SingleAlloc_64B);
+BENCHMARK(BM_PoolingAllocator_SingleAlloc_64B);
 
-static void BM_CPUAllocator_SingleAlloc_1KB(benchmark::State& state) {
-    CPUAllocator allocator;  // Use default constructor
+static void BM_PoolingAllocator_SingleAlloc_1KB(benchmark::State& state) {
+    PoolingAllocator allocator;  // Use default constructor
 
     for (auto _ : state) {
         void* ptr = allocator.allocate(1024);
@@ -40,10 +39,10 @@ static void BM_CPUAllocator_SingleAlloc_1KB(benchmark::State& state) {
         allocator.deallocate(ptr);
     }
 }
-BENCHMARK(BM_CPUAllocator_SingleAlloc_1KB);
+BENCHMARK(BM_PoolingAllocator_SingleAlloc_1KB);
 
-static void BM_CPUAllocator_SingleAlloc_1MB(benchmark::State& state) {
-    CPUAllocator allocator;  // Use default constructor
+static void BM_PoolingAllocator_SingleAlloc_1MB(benchmark::State& state) {
+    PoolingAllocator allocator;  // Use default constructor
 
     for (auto _ : state) {
         void* ptr = allocator.allocate(1024 * 1024);
@@ -51,10 +50,10 @@ static void BM_CPUAllocator_SingleAlloc_1MB(benchmark::State& state) {
         allocator.deallocate(ptr);
     }
 }
-BENCHMARK(BM_CPUAllocator_SingleAlloc_1MB);
+BENCHMARK(BM_PoolingAllocator_SingleAlloc_1MB);
 
-static void BM_CPUAllocator_SingleAlloc_10MB(benchmark::State& state) {
-    CPUAllocator allocator;  // Use default constructor
+static void BM_PoolingAllocator_SingleAlloc_10MB(benchmark::State& state) {
+    PoolingAllocator allocator;  // Use default constructor
 
     for (auto _ : state) {
         void* ptr = allocator.allocate(10 * 1024 * 1024);
@@ -62,10 +61,10 @@ static void BM_CPUAllocator_SingleAlloc_10MB(benchmark::State& state) {
         allocator.deallocate(ptr);
     }
 }
-BENCHMARK(BM_CPUAllocator_SingleAlloc_10MB);
+BENCHMARK(BM_PoolingAllocator_SingleAlloc_10MB);
 
-static void BM_CPUAllocator_SingleAlloc_100MB(benchmark::State& state) {
-    CPUAllocator allocator;  // Use default constructor
+static void BM_PoolingAllocator_SingleAlloc_100MB(benchmark::State& state) {
+    PoolingAllocator allocator;  // Use default constructor
 
     for (auto _ : state) {
         void* ptr = allocator.allocate(100 * 1024 * 1024);
@@ -73,10 +72,10 @@ static void BM_CPUAllocator_SingleAlloc_100MB(benchmark::State& state) {
         allocator.deallocate(ptr);
     }
 }
-BENCHMARK(BM_CPUAllocator_SingleAlloc_100MB);
+BENCHMARK(BM_PoolingAllocator_SingleAlloc_100MB);
 
-static void BM_CPUAllocator_SingleAlloc_1GB(benchmark::State& state) {
-    CPUAllocator allocator;  // Use default constructor
+static void BM_PoolingAllocator_SingleAlloc_1GB(benchmark::State& state) {
+    PoolingAllocator allocator;  // Use default constructor
 
     for (auto _ : state) {
         void* ptr = allocator.allocate(1024 * 1024 * 1024);
@@ -84,12 +83,12 @@ static void BM_CPUAllocator_SingleAlloc_1GB(benchmark::State& state) {
         allocator.deallocate(ptr);
     }
 }
-BENCHMARK(BM_CPUAllocator_SingleAlloc_1GB);
+BENCHMARK(BM_PoolingAllocator_SingleAlloc_1GB);
 
 //! Multiple Allocation Benchmarks
 
-static void BM_CPUAllocator_MultipleAllocations_10MB(benchmark::State& state) {
-    CPUAllocator allocator;  // Use default constructor
+static void BM_PoolingAllocator_MultipleAllocations_10MB(benchmark::State& state) {
+    PoolingAllocator allocator;  // Use default constructor
 
     for (auto _ : state) {
         std::vector<void*> ptrs;
@@ -103,14 +102,14 @@ static void BM_CPUAllocator_MultipleAllocations_10MB(benchmark::State& state) {
         }
     }
 }
-BENCHMARK(BM_CPUAllocator_MultipleAllocations_10MB)
+BENCHMARK(BM_PoolingAllocator_MultipleAllocations_10MB)
     ->Range(8, 128)        // 8 to 128 allocations (80MB to 1.25GB)
     ->RangeMultiplier(2);  // Double each time: 8, 16, 32, 64, 128
 
 //! Memory Reuse Benchmarks - Tests allocator's ability to reuse freed memory
 
-static void BM_CPUAllocator_MemoryReuse_1MB(benchmark::State& state) {
-    CPUAllocator allocator;
+static void BM_PoolingAllocator_MemoryReuse_1MB(benchmark::State& state) {
+    PoolingAllocator allocator;
     const size_t block_size = 1024 * 1024;  // 1MB
     const int num_blocks = state.range(0);
 
@@ -139,15 +138,15 @@ static void BM_CPUAllocator_MemoryReuse_1MB(benchmark::State& state) {
         }
     }
 }
-BENCHMARK(BM_CPUAllocator_MemoryReuse_1MB)
+BENCHMARK(BM_PoolingAllocator_MemoryReuse_1MB)
     ->Arg(8)     // 8MB total
     ->Arg(16)    // 16MB total
     ->Arg(32)    // 32MB total
     ->Arg(64)    // 64MB total
     ->Arg(128);  // 128MB total
 
-static void BM_CPUAllocator_MemoryReuse_10MB(benchmark::State& state) {
-    CPUAllocator allocator;
+static void BM_PoolingAllocator_MemoryReuse_10MB(benchmark::State& state) {
+    PoolingAllocator allocator;
     const size_t block_size = 10 * 1024 * 1024;  // 10MB
     const int num_blocks = state.range(0);
 
@@ -176,14 +175,14 @@ static void BM_CPUAllocator_MemoryReuse_10MB(benchmark::State& state) {
         }
     }
 }
-BENCHMARK(BM_CPUAllocator_MemoryReuse_10MB)
+BENCHMARK(BM_PoolingAllocator_MemoryReuse_10MB)
     ->Arg(4)    // 40MB total
     ->Arg(8)    // 80MB total
     ->Arg(16)   // 160MB total
     ->Arg(32);  // 320MB total
 
-static void BM_CPUAllocator_MemoryReuse_MixedSizes(benchmark::State& state) {
-    CPUAllocator allocator;
+static void BM_PoolingAllocator_MemoryReuse_MixedSizes(benchmark::State& state) {
+    PoolingAllocator allocator;
     // Mix of small, medium, and large allocations
     const std::vector<size_t> sizes = {
         1024,             // 1KB
@@ -219,7 +218,7 @@ static void BM_CPUAllocator_MemoryReuse_MixedSizes(benchmark::State& state) {
         }
     }
 }
-BENCHMARK(BM_CPUAllocator_MemoryReuse_MixedSizes)
+BENCHMARK(BM_PoolingAllocator_MemoryReuse_MixedSizes)
     ->Arg(16)    // 16 allocations (mixed sizes)
     ->Arg(64)    // 64 allocations
     ->Arg(256);  // 256 allocations

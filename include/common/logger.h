@@ -20,6 +20,18 @@ enum class LogLevel { TRACE, DEBUG, INFO, WARNING, ERROR, FATAL };
 enum class LogOutput { CONSOLE, FILE, BOTH };
 
 // ============================================================================
+// Log Entry Structure
+// ============================================================================
+
+struct LogEntry {
+    std::string timestamp;
+    std::string log_level_str;  // "[INFO]", "[ERROR]", etc.
+    LogLevel log_level_enum;    // For determining color
+    std::string scope;          // "[System]", "[MemoryUtils]", etc.
+    std::string message;        // The actual message
+};
+
+// ============================================================================
 // Logger Class
 // ============================================================================
 
@@ -132,7 +144,7 @@ class Logger {
     static bool sFileStreamOpen;       /// Track if file stream is open
 
     // Logging thread members
-    static std::queue<std::string> sLogQueue;           /// Queue for log messages
+    static std::queue<LogEntry> sLogQueue;              /// Queue for log messages
     static std::mutex sLogQueueMutex;                   /// Mutex for log queue
     static std::thread sLoggingThread;                  /// Logging thread
     static std::atomic<bool> sRunning;                  /// Flag to control logging thread

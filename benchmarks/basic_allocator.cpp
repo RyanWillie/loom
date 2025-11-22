@@ -11,7 +11,6 @@
 #include "cpu/basic_allocator.h"
 
 #include "common/device.h"
-#include "cpu/cpu_allocator.h"
 #include <benchmark/benchmark.h>
 
 using namespace loom;

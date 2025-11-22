@@ -1,16 +1,17 @@
 #pragma once
 
 #include "common/device.h"
-#include "common/tensor/allocator.h"
+#include "common/memory/allocator.h"
 
 namespace loom {
 
 /**
  * @brief Basic allocator for CPU
  *
- * This allocator is a simple allocator for CPU. It allocates memory from the CPU.
- * It is a simple allocator that does not support any special features.
- * It is used for basic allocation and deallocation of memory.
+ * This allocator is a simple allocator for CPU.
+ * - It does not support any special features.
+ * - It is used for basic allocation and deallocation of memory.
+ * - It just wraps the std::malloc and std::free functions.
  */
 class BasicAllocator : public Allocator {
   public:
