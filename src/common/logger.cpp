@@ -158,12 +158,21 @@ Logger::~Logger() = default;
 // ============================================================================
 
 Logger& Logger::getInstance(const std::string& scope, const LogLevel& level) {
-    // Check if logging thread is running
-    if (!sRunning) {
+    if (sShutdownRequested) {
+        static Logger dummy(scope, level);
+        return dummy;
+    }
+
+    // Proper double-checked locking for thread initialization
+    // First check without lock (fast path for already-running case)
+    if (!sRunning.load(std::memory_order_acquire)) {
         std::lock_guard<std::mutex> lock(sRunningMutex);
-        if (!sLoggingThread.joinable()) {
-            sLoggingThread = std::thread(runLoggingThread);
-            sRunning = true;
+        // Double-check after acquiring lock to prevent race
+        if (!sRunning.load(std::memory_order_acquire)) {
+            if (!sLoggingThread.joinable()) {
+                sLoggingThread = std::thread(runLoggingThread);
+                sRunning.store(true, std::memory_order_release);
+            }
         }
     }
 

@@ -2,6 +2,7 @@
 
 #include "common/device.h"
 #include "common/dtypes.h"
+#include "common/logger.h"
 #include "common/tensor/storage.h"
 #include "common/type_traits.h"
 #include <gtest/gtest.h>
@@ -15,6 +16,13 @@ using namespace loom;
 class StorageTest : public ::testing::Test {
   protected:
     StorageTest() : cpu_device(DeviceType::CPU) {}
+
+    void SetUp() override {
+        // Pre-initialize logger to avoid race conditions during storage creation
+        // This ensures the logging thread is running before any tests execute
+        auto& logger = Logger::getInstance("StorageTest");
+        logger.info("Test fixture initialized");
+    }
 
     Device cpu_device;
 };

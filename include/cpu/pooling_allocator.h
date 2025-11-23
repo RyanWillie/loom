@@ -1,5 +1,4 @@
 #pragma once
-#include <map>
 #include <memory>
 #include <unordered_map>
 #include <vector>
@@ -11,9 +10,7 @@
 namespace loom {
 
 struct PoolingAllocatorConfig {
-    size_t alignment = 16;
-    bool pinned = false;
-    std::vector<size_t> block_sizes;
+    size_t alignment = 0;
 };
 
 /**
@@ -22,18 +19,17 @@ struct PoolingAllocatorConfig {
  * This allocator is a pooling allocator for CPU Memory.
  * - It supports alignment and pinned memory allocation.
  * - It uses a pool of memory blocks to allocate memory.
- * - It uses a free list to manage the memory blocks.
- * - It uses a mutex to protect the free list.
- * - It uses a condition variable to signal the free list.
- * - It uses a thread to manage the memory blocks.
- * - It uses a thread to manage the free list.
- * - It uses a thread to manage the mutex.
- * - It uses a thread to manage the condition variable.
+ * - It uses a hash map with vectors for O(1) lookups (exact size match).
+ * - It stores block size in a header prefix (no separate metadata map).
+ *
+ * Optimizations:
+ * - Hash map + vector for O(1) pool lookups (vs O(log n) with multimap)
+ * - Header prefix for size tracking (vs separate hash map)
  */
 class PoolingAllocator : public Allocator {
   public:
     PoolingAllocator(const PoolingAllocatorConfig& config = PoolingAllocatorConfig());
-    ~PoolingAllocator() = default;
+    ~PoolingAllocator() override;
     PoolingAllocator(const PoolingAllocator&) = delete;
     PoolingAllocator& operator=(const PoolingAllocator&) = delete;
     PoolingAllocator(PoolingAllocator&&) = delete;
@@ -45,11 +41,16 @@ class PoolingAllocator : public Allocator {
     [[nodiscard]] Device device() const override;
 
   private:
+    void* AllocateBlock(size_t bytes);
+
     PoolingAllocatorConfig mConfig;
 
-    // Track the allocated sizes of the memory blocks
-    std::unordered_map<void*, size_t> mAllocatedSizes;
+    // Pool: maps size -> list of free blocks of that exact size
+    // O(1) lookup instead of O(log n) with multimap
+    std::unordered_map<size_t, std::vector<void*>> mFreeBlocks;
 
-    std::multimap<size_t, void*> mFreeBlocks;
+    // Sentinel for zero-size allocations
+    // Shared across all PoolingAllocator instances
+    static char sZeroSizeSentinel;
 };
 }  // namespace loom

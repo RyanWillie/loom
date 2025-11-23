@@ -3,6 +3,7 @@
 #include <vector>
 
 #include "common/device.h"
+#include "common/logger.h"
 #include "common/memory/allocator.h"
 #include "common/registry/allocator_registry.h"
 #include "cpu/pooling_allocator.h"
@@ -16,6 +17,13 @@ using namespace loom;
 
 class AllocatorRegistryTest : public ::testing::Test {
   protected:
+    void SetUp() override {
+        // Pre-initialize logger to avoid race conditions during allocator creation
+        // This ensures the logging thread is running before any tests execute
+        auto& logger = Logger::getInstance("AllocatorRegistryTest");
+        logger.info("Test fixture initialized");
+    }
+
     void TearDown() override {
         // Clean up registry after each test
         AllocatorRegistry::clear();

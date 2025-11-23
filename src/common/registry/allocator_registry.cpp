@@ -3,6 +3,7 @@
 #include <stdexcept>
 
 #include "common/device.h"
+#include "cpu/basic_allocator.h"
 #include "cpu/pooling_allocator.h"
 
 namespace loom {
