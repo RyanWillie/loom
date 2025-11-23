@@ -9,6 +9,33 @@
 #include <queue>
 #include <sstream>
 #include <thread>
+#include <unistd.h>  // For isatty()
+
+// ============================================================================
+// ANSI Color Codes for Terminal Output
+// ============================================================================
+
+namespace colors {
+// Text attributes
+constexpr const char* RESET = "\033[0m";
+constexpr const char* BOLD = "\033[1m";
+constexpr const char* DIM = "\033[2m";
+
+// Regular colors
+constexpr const char* RED = "\033[31m";
+constexpr const char* GREEN = "\033[32m";
+constexpr const char* YELLOW = "\033[33m";
+constexpr const char* BLUE = "\033[34m";
+constexpr const char* MAGENTA = "\033[35m";
+constexpr const char* CYAN = "\033[36m";
+
+// Bright colors
+constexpr const char* BRIGHT_RED = "\033[91m";
+constexpr const char* BRIGHT_GREEN = "\033[92m";
+constexpr const char* BRIGHT_YELLOW = "\033[93m";
+constexpr const char* BRIGHT_CYAN = "\033[96m";
+constexpr const char* BRIGHT_WHITE = "\033[97m";
+}  // namespace colors
 
 // ============================================================================
 // Static Helper Functions
@@ -26,6 +53,66 @@ std::string generateTimestampedLogFilename() {
 
     return ss.str();
 }
+
+// Detect if terminal supports colors
+bool isTerminalColorSupported() {
+#ifndef _WIN32
+    // Unix: check if stdout is connected to a terminal
+    return isatty(fileno(stdout));
+#else
+    // Windows: default to false for now
+    return false;
+#endif
+}
+
+// Get color code for a log level
+const char* getLogLevelColor(LogLevel level) {
+    switch (level) {
+        case LogLevel::TRACE:
+            return colors::DIM;
+        case LogLevel::DEBUG:
+            return colors::CYAN;
+        case LogLevel::INFO:
+            return colors::BRIGHT_GREEN;
+        case LogLevel::WARNING:
+            return colors::BRIGHT_YELLOW;
+        case LogLevel::ERROR:
+            return colors::BRIGHT_RED;
+        case LogLevel::FATAL:
+            return colors::BRIGHT_RED;  // We'll add BOLD separately
+        default:
+            return colors::RESET;
+    }
+}
+
+// Format a log entry for plain text output (files and non-color terminals)
+std::string formatPlain(const LogEntry& entry) {
+    return entry.timestamp + " " + entry.log_level_str + " " + entry.scope + " " + entry.message +
+           '\n';
+}
+
+// Format a log entry with fancy colors (console)
+std::string formatColored(const LogEntry& entry) {
+    std::stringstream ss;
+
+    // Timestamp in dim
+    ss << colors::DIM << entry.timestamp << colors::RESET << " ";
+
+    // Log level in color (bold for FATAL)
+    if (entry.log_level_enum == LogLevel::FATAL) {
+        ss << colors::BOLD;
+    }
+    ss << getLogLevelColor(entry.log_level_enum) << entry.log_level_str << colors::RESET << " ";
+
+    // Scope in bright white/bold
+    ss << colors::CYAN << entry.scope << colors::RESET << " ";
+
+    // Message in normal color
+    ss << entry.message << "\n";
+
+    return ss.str();
+}
+
 }  // namespace
 
 // ============================================================================
@@ -41,7 +128,7 @@ LogOutput Logger::sLogOutput = LogOutput::CONSOLE;
 std::string Logger::sLogFile = generateTimestampedLogFilename();
 std::ofstream Logger::sFileStream;
 bool Logger::sFileStreamOpen = false;
-std::queue<std::string> Logger::sLogQueue = {};
+std::queue<LogEntry> Logger::sLogQueue = {};
 
 std::mutex Logger::sLogQueueMutex;
 std::mutex Logger::sRunningMutex;
@@ -71,12 +158,21 @@ Logger::~Logger() = default;
 // ============================================================================
 
 Logger& Logger::getInstance(const std::string& scope, const LogLevel& level) {
-    // Check if logging thread is running
-    if (!sRunning) {
+    if (sShutdownRequested) {
+        static Logger dummy(scope, level);
+        return dummy;
+    }
+
+    // Proper double-checked locking for thread initialization
+    // First check without lock (fast path for already-running case)
+    if (!sRunning.load(std::memory_order_acquire)) {
         std::lock_guard<std::mutex> lock(sRunningMutex);
-        if (!sLoggingThread.joinable()) {
-            sLoggingThread = std::thread(runLoggingThread);
-            sRunning = true;
+        // Double-check after acquiring lock to prevent race
+        if (!sRunning.load(std::memory_order_acquire)) {
+            if (!sLoggingThread.joinable()) {
+                sLoggingThread = std::thread(runLoggingThread);
+                sRunning.store(true, std::memory_order_release);
+            }
         }
     }
 
@@ -219,15 +315,17 @@ void Logger::logInternal(const std::string& message, const LogLevel& level) cons
         return;
     }
 
-    // NOLINTBEGIN(readability-identifier-naming,readability-convert-member-functions-to-static)
-    const std::string log_message = "[" + mScope + "] " + message;
-    const std::string timestamp = getCurrentTimestamp();
-    const std::string log_level = "[" + sLogLevelToString.at(level) + "]";
-    const std::string formatted_msg = timestamp + " " + log_level + " " + log_message + '\n';
-    // NOLINTEND(readability-identifier-naming,readability-convert-member-functions-to-static)
+    // Create structured log entry
+    LogEntry entry;
+    entry.timestamp = getCurrentTimestamp();
+    entry.log_level_str = "[" + sLogLevelToString.at(level) + "]";
+    entry.log_level_enum = level;
+    entry.scope = "[" + mScope + "]";
+    entry.message = message;
 
+    // Push structured entry to queue
     std::lock_guard<std::mutex> lock(sLogQueueMutex);
-    sLogQueue.push(formatted_msg);
+    sLogQueue.push(entry);
     sLogQueueCondition.notify_one();
 }
 
@@ -255,27 +353,35 @@ void Logger::runLoggingThread() {
     while (!sShutdownRequested || !sLogQueue.empty()) {
         std::unique_lock<std::mutex> lock(sLogQueueMutex);
         sLogQueueCondition.wait(lock, [] { return !sLogQueue.empty() || sShutdownRequested; });
-        // Need to drain all the messages in the queue
-        std::vector<std::string> messages;
+
+        // Drain all log entries from the queue
+        std::vector<LogEntry> entries;
         while (!sLogQueue.empty()) {
-            messages.emplace_back(sLogQueue.front());
+            entries.emplace_back(sLogQueue.front());
             sLogQueue.pop();
         }
         lock.unlock();
 
-        // Write to console if appropriate
+        // Write to console if appropriate (with colors!)
         if (sLogOutput == LogOutput::CONSOLE || sLogOutput == LogOutput::BOTH) {
-            for (const auto& message : messages) {
-                std::cout << message;
+            static const bool use_color = isTerminalColorSupported();
+
+            for (const auto& entry : entries) {
+                if (use_color) {
+                    std::cout << formatColored(entry);
+                } else {
+                    std::cout << formatPlain(entry);
+                }
             }
+            std::cout.flush();
         }
 
-        // Write to file if appropriate
+        // Write to file if appropriate (always plain text, no colors!)
         if (sLogOutput == LogOutput::FILE || sLogOutput == LogOutput::BOTH) {
             std::lock_guard<std::mutex> file_lock(sFileMutex);
             if (sFileStreamOpen && sFileStream.is_open()) {
-                for (const auto& message : messages) {
-                    sFileStream << message;
+                for (const auto& entry : entries) {
+                    sFileStream << formatPlain(entry);
                 }
                 sFileStream.flush();  // Ensure immediate write for critical logs
             }

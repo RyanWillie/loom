@@ -4,7 +4,7 @@
 #include <mutex>
 
 #include "common/device.h"
-#include "common/tensor/allocator.h"
+#include "common/memory/allocator.h"
 
 namespace loom {
 

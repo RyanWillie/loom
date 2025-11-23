@@ -3,7 +3,8 @@
 #include <stdexcept>
 
 #include "common/device.h"
-#include "cpu/cpu_allocator.h"
+#include "cpu/basic_allocator.h"
+#include "cpu/pooling_allocator.h"
 
 namespace loom {
 
@@ -26,7 +27,7 @@ std::shared_ptr<Allocator> AllocatorRegistry::get(const loom::Device& device) {
     if (mAllocators.find(device) == mAllocators.end()) {
         // Create a default allocator for the device
         if (device.isCPU()) {
-            mAllocators[device] = std::make_shared<CPUAllocator>();
+            mAllocators[device] = std::make_shared<PoolingAllocator>();
         } else if (device.isCUDA()) {
             // mAllocators[device] = std::make_shared<CUDAAllocator>();
             throw std::runtime_error("CUDA allocator not implemented");

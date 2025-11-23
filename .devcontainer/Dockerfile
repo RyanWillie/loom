@@ -1,0 +1,51 @@
+# Loom Dev Container - C++ Development Environment
+FROM ubuntu:22.04
+
+# Avoid interactive prompts
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install build tools and development utilities
+RUN apt-get update && apt-get install -y \
+    # Core build tools
+    software-properties-common \
+    cmake \
+    git \
+    wget \
+    curl \
+    # Build systems
+    ninja-build \
+    make \
+    # Compilers
+    clang \
+    clang-format \
+    clang-tidy \
+    # Debuggers and profilers
+    gdb \
+    valgrind \
+    # Editor and utilities
+    vim \
+    nano \
+    less \
+    htop \
+    tree \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install GCC 13 from Ubuntu toolchain PPA for C++20 std::format support
+RUN add-apt-repository ppa:ubuntu-toolchain-r/test -y && \
+    apt-get update && \
+    apt-get install -y gcc-13 g++-13 && \
+    update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-13 100 && \
+    update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-13 100 && \
+    update-alternatives --install /usr/bin/cc cc /usr/bin/gcc-13 100 && \
+    update-alternatives --install /usr/bin/c++ c++ /usr/bin/g++-13 100 && \
+    rm -rf /var/lib/apt/lists/*
+
+# Set working directory
+WORKDIR /workspace
+
+# Environment variables for sanitizers
+ENV ASAN_OPTIONS=detect_leaks=1:fast_unwind_on_malloc=0
+ENV UBSAN_OPTIONS=print_stacktrace=1
+
+# The source will be mounted by Dev Container
+

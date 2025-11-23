@@ -11,7 +11,6 @@
 #include "cpu/basic_allocator.h"
 
 #include "common/device.h"
-#include "cpu/cpu_allocator.h"
 #include <benchmark/benchmark.h>
 
 using namespace loom;
@@ -86,7 +85,7 @@ static void BM_BasicAllocator_SingleAlloc_1GB(benchmark::State& state) {
 }
 BENCHMARK(BM_BasicAllocator_SingleAlloc_1GB);
 
-static void BM_CPUAllocator_MultipleAllocations_10MB(benchmark::State& state) {
+static void BM_BasicAllocator_MultipleAllocations_10MB(benchmark::State& state) {
     BasicAllocator allocator(Device(DeviceType::CPU));  // Use default constructor
 
     for (auto _ : state) {
@@ -101,7 +100,7 @@ static void BM_CPUAllocator_MultipleAllocations_10MB(benchmark::State& state) {
         }
     }
 }
-BENCHMARK(BM_CPUAllocator_MultipleAllocations_10MB)
+BENCHMARK(BM_BasicAllocator_MultipleAllocations_10MB)
     ->Range(8, 128)        // 8 to 128 allocations (80MB to 1.25GB)
     ->RangeMultiplier(2);  // Double each time: 8, 16, 32, 64, 128
 

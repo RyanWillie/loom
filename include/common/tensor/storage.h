@@ -6,7 +6,7 @@
 
 #include "common/device.h"
 #include "common/dtypes.h"
-#include "common/tensor/allocator.h"
+#include "common/memory/allocator.h"
 #include "common/type_traits.h"
 
 namespace loom {

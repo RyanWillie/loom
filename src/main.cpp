@@ -2,6 +2,7 @@
 
 #include "common/device.h"
 #include "common/logger.h"
+#include "common/memory/utils.h"
 #include "common/registry/allocator_registry.h"
 
 #ifdef USE_CUDA
@@ -11,6 +12,7 @@
 using loom::AllocatorRegistry;
 using loom::Device;
 using loom::DeviceType;
+using loom::memory::MemoryUtils;
 
 int main() {
     Logger::setMinLogLevel(LogLevel::TRACE);
@@ -18,6 +20,11 @@ int main() {
 
     auto& logger = Logger::getInstance("System");
     logger.info("Starting Loom Neural Network Project");
+
+    logger.info("SIMD alignment: {}", MemoryUtils::detectSIMDAlignment());
+    logger.info("Cache line size: {}", MemoryUtils::getCacheLineSize());
+    logger.info("Page size: {}", MemoryUtils::getPageSize());
+    logger.info("Default alignment: {}", MemoryUtils::getDefaultAlignment());
 
 #ifdef USE_CUDA
     logger.info("CUDA Enabled");

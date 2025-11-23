@@ -5,8 +5,8 @@
 
 #include "common/device.h"
 #include "common/dtypes.h"
+#include "common/memory/allocator.h"
 #include "common/registry/allocator_registry.h"
-#include "common/tensor/allocator.h"
 
 namespace loom {
 using loom::Allocator;
