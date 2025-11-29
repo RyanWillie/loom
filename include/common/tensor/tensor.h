@@ -4,7 +4,9 @@
 
 #include "common/device.h"
 #include "common/dtypes.h"
+#include "common/tensor/accessor.h"
 #include "common/tensor/storage.h"
+
 namespace loom {
 class Tensor {
   public:
@@ -42,8 +44,9 @@ class Tensor {
     Tensor& zero();
     Tensor& one();
     Tensor& rand();
-    Tensor& fill(const double value);
+    Tensor& randn();
     Tensor& uniform(const double min, const double max);
+    Tensor& fill(const double value);
 
     // Basic Accessors
     [[nodiscard]] const std::vector<size_t>& shape() const;
@@ -52,17 +55,32 @@ class Tensor {
     [[nodiscard]] loom::DType dtype() const;
     [[nodiscard]] loom::Device device() const;
 
+    // Visualization
+    void print(const std::string& name = "Tensor") const;
+
     // Basic Arithmetic Operations with Tensor
     Tensor operator+(const Tensor& other) const;
     Tensor operator-(const Tensor& other) const;
     Tensor operator*(const Tensor& other) const;
     Tensor operator/(const Tensor& other) const;
 
+    // In place arithmetic operations
+    Tensor& operator+=(const Tensor& other);
+    Tensor& operator-=(const Tensor& other);
+    Tensor& operator*=(const Tensor& other);
+    Tensor& operator/=(const Tensor& other);
+
     // Basic Arithmetic Operations with Scalar
     Tensor operator+(const double scalar) const;
     Tensor operator-(const double scalar) const;
     Tensor operator*(const double scalar) const;
     Tensor operator/(const double scalar) const;
+
+    // In place arithmetic operations with scalar
+    Tensor& operator+=(const double scalar);
+    Tensor& operator-=(const double scalar);
+    Tensor& operator*=(const double scalar);
+    Tensor& operator/=(const double scalar);
 
     // Matmul Operations
     Tensor matmul(const Tensor& other) const;
@@ -85,6 +103,9 @@ class Tensor {
     [[nodiscard]] size_t ndim() const;
     [[nodiscard]] bool isContiguous() const;
 
+    // Extract scalar value from single-element tensor
+    [[nodiscard]] double item() const;
+
     // View operations
     Tensor reshape(const std::vector<size_t>& shape) const;
     Tensor permute(const std::vector<int>& axes) const;
@@ -92,15 +113,72 @@ class Tensor {
     Tensor transpose(int dim0, int dim1) const;  // Swap any 2 dims
     Tensor flatten() const;
     Tensor squeeze() const;
-    Tensor squeeze(const int dim) const;
-    Tensor unsqueeze(const int dim) const;
+    Tensor squeeze(int dim) const;
+    Tensor unsqueeze(int dim) const;
 
     Tensor clone() const;
     Tensor contiguous() const;
     Tensor toDevice(const Device& device) const;
 
-    Tensor slice(const int dim, const size_t start, const size_t end) const;
+    Tensor slice(int dim, const size_t start, const size_t end) const;
     Tensor operator[](const std::vector<size_t>& indices) const;
+
+    // ========================================================================
+    // Typed Accessors - Zero-overhead element access for performance-critical code
+    // ========================================================================
+
+    // Get a typed accessor for fast element access
+    // Usage: auto acc = tensor.accessor<float, 2>();
+    //        acc[i][j] = 1.0f;  // Fast, typed access
+    // T: The element type (must match tensor's dtype)
+    // N: Number of dimensions (must match tensor's ndim)
+    template <typename T, size_t N>
+    TensorAccessor<T, N> accessor() {
+        // Validate dimensions
+        if (ndim() != N) {
+            throw std::runtime_error("Accessor dimension mismatch: tensor has " +
+                                     std::to_string(ndim()) + " dimensions, but accessor has " +
+                                     std::to_string(N));
+        }
+
+        // Validate type matches dtype
+        constexpr DType expected_dtype = dtype_traits<T>::value;
+        if (dtype() != expected_dtype) {
+            throw std::runtime_error("Accessor type mismatch: tensor has dtype " +
+                                     std::string(name(dtype())) + ", but accessor requested " +
+                                     std::string(name(expected_dtype)));
+        }
+
+        // Get typed pointer with offset applied
+        T* data_ptr = static_cast<T*>(mStorage->data().get()) + mOffset;
+
+        return TensorAccessor<T, N>(data_ptr, mStride.data(), mShape.data());
+    }
+
+    // Const version for read-only access
+    // Returns TensorAccessor<const T, N> which prevents modification
+    template <typename T, size_t N>
+    TensorAccessor<const T, N> accessor() const {
+        // Validate dimensions
+        if (ndim() != N) {
+            throw std::runtime_error("Accessor dimension mismatch: tensor has " +
+                                     std::to_string(ndim()) + " dimensions, but accessor has " +
+                                     std::to_string(N));
+        }
+
+        // Validate type matches dtype
+        constexpr DType expected_dtype = dtype_traits<T>::value;
+        if (dtype() != expected_dtype) {
+            throw std::runtime_error("Accessor type mismatch: tensor has dtype " +
+                                     std::string(name(dtype())) + ", but accessor requested " +
+                                     std::string(name(expected_dtype)));
+        }
+
+        // Get typed pointer with offset applied
+        const T* data_ptr = static_cast<const T*>(mStorage->data().get()) + mOffset;
+
+        return TensorAccessor<const T, N>(data_ptr, mStride.data(), mShape.data());
+    }
 
   private:
     std::shared_ptr<Storage> mStorage;
@@ -109,8 +187,59 @@ class Tensor {
     size_t mOffset;
 
     static std::vector<size_t> calculateStride(const std::vector<size_t>& shape);
-    static size_t calculateOffset(const std::vector<size_t>& shape,
+    static size_t calculateOffset(const std::vector<size_t>& indices,
                                   const std::vector<size_t>& stride);
+
+    // Broadcasting helpers
+    static std::vector<size_t> broadcastShape(const std::vector<size_t>& a,
+                                              const std::vector<size_t>& b);
+    static std::vector<size_t> broadcastStrides(const std::vector<size_t>& original_shape,
+                                                const std::vector<size_t>& original_stride,
+                                                const std::vector<size_t>& target_shape);
+
+    // Broadcast binary operation with lambda
+    template <typename Op>
+    Tensor broadcastOp(const Tensor& other, Op op) const {
+        if (other.dtype() != dtype()) {
+            throw std::runtime_error("DType mismatch for arithmetic operation");
+        }
+
+        auto out_shape = broadcastShape(mShape, other.mShape);
+        auto stride_a = broadcastStrides(mShape, mStride, out_shape);
+        auto stride_b = broadcastStrides(other.mShape, other.mStride, out_shape);
+
+        Tensor result = Tensor::zeros(out_shape, dtype(), device());
+        size_t out_numel = result.numel();
+
+        dispatchByDType(dtype(), result.mStorage->data().get(), out_numel,
+                        [&](auto* dst_ptr, size_t n) {
+                            using T = std::remove_pointer_t<decltype(dst_ptr)>;
+                            const T* src_a = static_cast<const T*>(mStorage->data().get());
+                            const T* src_b = static_cast<const T*>(other.mStorage->data().get());
+
+                            for (size_t out_linear = 0; out_linear < n; ++out_linear) {
+                                // Convert linear index to multi-dimensional index
+                                std::vector<size_t> out_idx(out_shape.size());
+                                size_t temp = out_linear;
+                                for (int i = static_cast<int>(out_shape.size()) - 1; i >= 0; --i) {
+                                    out_idx[i] = temp % out_shape[i];
+                                    temp /= out_shape[i];
+                                }
+
+                                // Calculate offsets using broadcast strides
+                                size_t offset_a = mOffset;
+                                size_t offset_b = other.mOffset;
+                                for (size_t i = 0; i < out_shape.size(); ++i) {
+                                    offset_a += out_idx[i] * stride_a[i];
+                                    offset_b += out_idx[i] * stride_b[i];
+                                }
+
+                                dst_ptr[out_linear] = op(src_a[offset_a], src_b[offset_b]);
+                            }
+                        });
+
+        return result;
+    }
 
     // Private constructor for internal use only
     Tensor(std::shared_ptr<Storage> storage, std::vector<size_t> shape, std::vector<size_t> stride,

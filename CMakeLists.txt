@@ -8,6 +8,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)  # For clang-tidy and IDE integration
 # --- Build Options ---
 option(ENABLE_CLANG_TIDY "Enable clang-tidy static analysis" OFF)
 option(ENABLE_CLANG_FORMAT "Enable clang-format checks" OFF)
+option(ENABLE_COVERAGE "Enable code coverage reporting" OFF)
 option(ENABLE_SANITIZER_ADDRESS "Enable AddressSanitizer" OFF)
 option(ENABLE_SANITIZER_UNDEFINED "Enable UndefinedBehaviorSanitizer" OFF)
 option(ENABLE_SANITIZER_THREAD "Enable ThreadSanitizer" OFF)
@@ -49,6 +50,103 @@ if(ENABLE_SANITIZER_MEMORY)
         add_link_options(-fsanitize=memory)
     else()
         message(WARNING "MemorySanitizer only supported with Clang")
+    endif()
+endif()
+
+# --- Coverage ---
+if(ENABLE_COVERAGE)
+    message(STATUS "Building with code coverage")
+
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU")
+        # GCC coverage flags
+        add_compile_options(--coverage -fprofile-arcs -ftest-coverage)
+        add_link_options(--coverage)
+
+        # Find gcov
+        find_program(GCOV_PATH gcov)
+        if(NOT GCOV_PATH)
+            message(WARNING "gcov not found, coverage reporting may not work")
+        endif()
+    elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        # Clang coverage flags
+        add_compile_options(-fprofile-instr-generate -fcoverage-mapping)
+        add_link_options(-fprofile-instr-generate -fcoverage-mapping)
+
+        # Find llvm-cov
+        find_program(LLVM_COV_PATH llvm-cov)
+        if(NOT LLVM_COV_PATH)
+            message(WARNING "llvm-cov not found, coverage reporting may not work")
+        endif()
+    else()
+        message(WARNING "Code coverage only supported with GCC or Clang")
+    endif()
+
+    # Find lcov for HTML report generation
+    find_program(LCOV_PATH lcov)
+    find_program(GENHTML_PATH genhtml)
+
+    if(LCOV_PATH AND GENHTML_PATH)
+        message(STATUS "Found lcov and genhtml - HTML coverage reports available")
+
+        # Add custom target for coverage report generation
+        add_custom_target(coverage
+            COMMAND ${CMAKE_COMMAND} -E echo "Generating coverage report..."
+
+            # Create coverage directory
+            COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_BINARY_DIR}/coverage
+
+            # Initialize coverage data (reset counters)
+            COMMAND ${LCOV_PATH} --directory . --zerocounters --quiet
+
+            # Run tests to generate coverage data
+            COMMAND ${CMAKE_COMMAND} -E echo "Running tests..."
+            COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure
+
+            # Capture coverage data
+            COMMAND ${CMAKE_COMMAND} -E echo "Capturing coverage data..."
+            COMMAND ${LCOV_PATH}
+                --directory .
+                --capture
+                --output-file ${CMAKE_BINARY_DIR}/coverage/coverage.info
+                --quiet
+
+            # Remove coverage from external dependencies (googletest, etc.)
+            COMMAND ${LCOV_PATH}
+                --remove ${CMAKE_BINARY_DIR}/coverage/coverage.info
+                '*/googletest/*'
+                '*/benchmark/*'
+                '*/c++/*'
+                '*/gcc/*'
+                '/usr/*'
+                '*/tests/*'
+                '*/benchmarks/*'
+                --output-file ${CMAKE_BINARY_DIR}/coverage/coverage_filtered.info
+                --quiet
+
+            # Generate HTML report
+            COMMAND ${CMAKE_COMMAND} -E echo "Generating HTML report..."
+            COMMAND ${GENHTML_PATH}
+                ${CMAKE_BINARY_DIR}/coverage/coverage_filtered.info
+                --output-directory ${CMAKE_BINARY_DIR}/coverage/html
+                --title "Loom Coverage Report"
+                --legend
+                --demangle-cpp
+                --quiet
+
+            # Print summary
+            COMMAND ${LCOV_PATH}
+                --list ${CMAKE_BINARY_DIR}/coverage/coverage_filtered.info
+
+            COMMAND ${CMAKE_COMMAND} -E echo ""
+            COMMAND ${CMAKE_COMMAND} -E echo "Coverage report generated!"
+            COMMAND ${CMAKE_COMMAND} -E echo "Open: ${CMAKE_BINARY_DIR}/coverage/html/index.html"
+
+            WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+            COMMENT "Generating code coverage report"
+        )
+    else()
+        message(WARNING "lcov or genhtml not found - coverage target will not be available")
+        message(WARNING "Install with: sudo apt-get install lcov (Ubuntu) or brew install lcov (macOS)")
     endif()
 endif()
 
