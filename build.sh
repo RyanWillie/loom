@@ -52,6 +52,7 @@ ${YELLOW}COMMANDS:${NC}
     ubsan           Build with UndefinedBehaviorSanitizer
     tsan            Build with ThreadSanitizer (data race detection)
     msan            Build with MemorySanitizer (uninitialized memory)
+    coverage        Build with coverage instrumentation and generate report
     tidy            Build with clang-tidy static analysis
     format          Build with clang-format enabled
     test            Build and run tests
@@ -71,6 +72,7 @@ ${YELLOW}EXAMPLES:${NC}
     ./build.sh debug                    # Build debug version
     ./build.sh release --jobs 8         # Build release with 8 parallel jobs
     ./build.sh asan                     # Build with AddressSanitizer
+    ./build.sh coverage                 # Build with coverage and generate HTML report
     ./build.sh tidy                     # Build with clang-tidy checks
     ./build.sh test                     # Build and run all tests
     ./build.sh bench                    # Run benchmarks (debug)
@@ -247,7 +249,53 @@ case $COMMAND in
         EXTRA_ARGS="-DENABLE_SANITIZER_MEMORY=ON -DCMAKE_CXX_COMPILER=clang++"
         build_project "$BUILD_DIR" "$BUILD_TYPE" "$EXTRA_ARGS"
         ;;
-    
+
+    coverage)
+        # Check for required tools
+        if ! command_exists lcov; then
+            print_error "lcov not found. Install it first:"
+            print_info "  Ubuntu/Debian: sudo apt-get install lcov"
+            print_info "  macOS: brew install lcov"
+            exit 1
+        fi
+
+        print_info "Building with code coverage instrumentation..."
+        BUILD_DIR="build-coverage"
+        BUILD_TYPE="Debug"
+        EXTRA_ARGS="-DENABLE_COVERAGE=ON"
+        build_project "$BUILD_DIR" "$BUILD_TYPE" "$EXTRA_ARGS"
+
+        print_info "Generating coverage report..."
+        cd "$BUILD_DIR"
+
+        # Run the coverage target (builds, runs tests, generates report)
+        cmake --build . --target coverage
+
+        cd ..
+
+        # Open the coverage report if on macOS or Linux with xdg-open
+        REPORT_PATH="${BUILD_DIR}/coverage/html/index.html"
+        if [ -f "$REPORT_PATH" ]; then
+            print_success "Coverage report generated!"
+            print_info "Report location: $REPORT_PATH"
+
+            # Try to open in browser
+            if command_exists open; then
+                # macOS
+                print_info "Opening coverage report in browser..."
+                open "$REPORT_PATH"
+            elif command_exists xdg-open; then
+                # Linux
+                print_info "Opening coverage report in browser..."
+                xdg-open "$REPORT_PATH" 2>/dev/null &
+            else
+                print_info "To view the report, open: $REPORT_PATH"
+            fi
+        else
+            print_warning "Coverage report not found. Check build output for errors."
+        fi
+        ;;
+
     tidy)
         if ! command_exists clang-tidy; then
             print_error "clang-tidy not found. Please install it first."
@@ -389,6 +437,9 @@ case $COMMAND in
                 ;;
             msan)
                 RUN_BUILD_DIR="build-msan"
+                ;;
+            coverage)
+                RUN_BUILD_DIR="build-coverage"
                 ;;
             tidy)
                 RUN_BUILD_DIR="build-tidy"

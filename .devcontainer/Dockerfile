@@ -4,6 +4,14 @@ FROM ubuntu:22.04
 # Avoid interactive prompts
 ENV DEBIAN_FRONTEND=noninteractive
 
+# Set locale to avoid Perl warnings
+RUN apt-get update && apt-get install -y locales && \
+    locale-gen en_US.UTF-8 && \
+    rm -rf /var/lib/apt/lists/*
+ENV LANG=en_US.UTF-8 \
+    LANGUAGE=en_US:en \
+    LC_ALL=en_US.UTF-8
+
 # Install build tools and development utilities
 RUN apt-get update && apt-get install -y \
     # Core build tools
@@ -22,6 +30,9 @@ RUN apt-get update && apt-get install -y \
     # Debuggers and profilers
     gdb \
     valgrind \
+    # Coverage tools
+    lcov \
+    gcovr \
     # Editor and utilities
     vim \
     nano \
@@ -39,6 +50,15 @@ RUN add-apt-repository ppa:ubuntu-toolchain-r/test -y && \
     update-alternatives --install /usr/bin/cc cc /usr/bin/gcc-13 100 && \
     update-alternatives --install /usr/bin/c++ c++ /usr/bin/g++-13 100 && \
     rm -rf /var/lib/apt/lists/*
+
+# Install lcov 2.0+ from source (Ubuntu's lcov 1.15 doesn't support GCC 13)
+RUN cd /tmp && \
+    wget https://github.com/linux-test-project/lcov/releases/download/v2.1/lcov-2.1.tar.gz && \
+    tar -xzf lcov-2.1.tar.gz && \
+    cd lcov-2.1 && \
+    make install && \
+    cd / && \
+    rm -rf /tmp/lcov-2.1 /tmp/lcov-2.1.tar.gz
 
 # Set working directory
 WORKDIR /workspace

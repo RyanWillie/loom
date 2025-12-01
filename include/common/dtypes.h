@@ -24,6 +24,48 @@ enum class DType {
     UINT64,
 };
 
+// Template helper to dispatch operations based on DType
+template <typename Func>
+void dispatchByDType(DType dtype, void* data, size_t size, Func&& func) {
+    switch (dtype) {
+        case DType::FLOAT32:
+            func(static_cast<float*>(data), size);
+            break;
+        case DType::FLOAT64:
+            func(static_cast<double*>(data), size);
+            break;
+        case DType::INT8:
+            func(static_cast<int8_t*>(data), size);
+            break;
+        case DType::INT16:
+            func(static_cast<int16_t*>(data), size);
+            break;
+        case DType::INT32:
+            func(static_cast<int32_t*>(data), size);
+            break;
+        case DType::INT64:
+            func(static_cast<int64_t*>(data), size);
+            break;
+        case DType::UINT8:
+            func(static_cast<uint8_t*>(data), size);
+            break;
+        case DType::UINT16:
+            func(static_cast<uint16_t*>(data), size);
+            break;
+        case DType::UINT32:
+            func(static_cast<uint32_t*>(data), size);
+            break;
+        case DType::UINT64:
+            func(static_cast<uint64_t*>(data), size);
+            break;
+        case DType::FLOAT16:
+        case DType::BFLOAT16:
+            throw std::runtime_error("FLOAT16 and BFLOAT16 not yet supported");
+        default:
+            throw std::runtime_error("Unsupported data type");
+    }
+}
+
 // ============================================================================
 // Utility Functions
 // ============================================================================

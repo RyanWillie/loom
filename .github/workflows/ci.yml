@@ -80,6 +80,83 @@ jobs:
           build/tests/
         retention-days: 7
 
+  # Code coverage reporting
+  coverage:
+    name: Code Coverage
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Cache Docker layers
+      uses: actions/cache@v4
+      with:
+        path: /tmp/.buildx-cache
+        key: ${{ runner.os }}-buildx-${{ hashFiles('docker/Dockerfile.cpu') }}
+        restore-keys: |
+          ${{ runner.os }}-buildx-
+
+    - name: Build Docker image
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        file: ./docker/Dockerfile.cpu
+        push: false
+        load: true
+        tags: loom-ci:latest
+        cache-from: type=local,src=/tmp/.buildx-cache
+        cache-to: type=local,dest=/tmp/.buildx-cache-new,mode=max
+
+    - name: Move cache
+      run: |
+        rm -rf /tmp/.buildx-cache
+        mv /tmp/.buildx-cache-new /tmp/.buildx-cache
+
+    - name: Generate coverage report
+      run: |
+        docker run --rm \
+          -v ${{ github.workspace }}:/workspace \
+          -w /workspace \
+          loom-ci:latest \
+          bash -c "
+            set -e
+            echo '=== Building with coverage instrumentation ==='
+            cmake -B build-coverage \
+              -G Ninja \
+              -DCMAKE_BUILD_TYPE=Debug \
+              -DENABLE_COVERAGE=ON
+
+            echo '=== Compiling ==='
+            cmake --build build-coverage --parallel \$(nproc)
+
+            echo '=== Generating coverage report ==='
+            cd build-coverage
+            cmake --build . --target coverage
+
+            echo '=== Coverage Summary ==='
+            lcov --summary coverage/coverage_filtered.info
+          "
+
+    - name: Upload coverage to Codecov
+      uses: codecov/codecov-action@v4
+      with:
+        files: ./build-coverage/coverage/coverage_filtered.info
+        flags: unittests
+        name: codecov-loom
+        fail_ci_if_error: false
+        verbose: true
+
+    - name: Upload coverage HTML report
+      uses: actions/upload-artifact@v4
+      with:
+        name: coverage-report
+        path: build-coverage/coverage/html/
+        retention-days: 30
+
   # Optional: Code quality checks with clang-tidy
   static-analysis:
     name: Static Analysis

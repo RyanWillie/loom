@@ -77,3 +77,13 @@ logs/*.txt
 *.cubin
 *.fatbin
 
+# Coverage
+*.gcda
+*.gcno
+*.gcov
+*.profraw
+*.profdata
+coverage/
+coverage.info
+coverage_filtered.info
+

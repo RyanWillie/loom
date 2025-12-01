@@ -20,7 +20,7 @@ using namespace loom;
 // ============================================================================
 
 static void BM_BasicAllocator_SingleAlloc_64B(benchmark::State& state) {
-    BasicAllocator allocator(Device(DeviceType::CPU));
+    BasicAllocator allocator{Device{DeviceType::CPU}};
 
     for (auto _ : state) {
         void* ptr = allocator.allocate(64);
@@ -31,7 +31,7 @@ static void BM_BasicAllocator_SingleAlloc_64B(benchmark::State& state) {
 BENCHMARK(BM_BasicAllocator_SingleAlloc_64B);
 
 static void BM_BasicAllocator_SingleAlloc_1KB(benchmark::State& state) {
-    BasicAllocator allocator(Device(DeviceType::CPU));
+    BasicAllocator allocator{Device{DeviceType::CPU}};
 
     for (auto _ : state) {
         void* ptr = allocator.allocate(1024);
@@ -42,7 +42,7 @@ static void BM_BasicAllocator_SingleAlloc_1KB(benchmark::State& state) {
 BENCHMARK(BM_BasicAllocator_SingleAlloc_1KB);
 
 static void BM_BasicAllocator_SingleAlloc_1MB(benchmark::State& state) {
-    BasicAllocator allocator(Device(DeviceType::CPU));
+    BasicAllocator allocator{Device{DeviceType::CPU}};
 
     for (auto _ : state) {
         void* ptr = allocator.allocate(1024 * 1024);
@@ -53,7 +53,7 @@ static void BM_BasicAllocator_SingleAlloc_1MB(benchmark::State& state) {
 BENCHMARK(BM_BasicAllocator_SingleAlloc_1MB);
 
 static void BM_BasicAllocator_SingleAlloc_10MB(benchmark::State& state) {
-    BasicAllocator allocator(Device(DeviceType::CPU));
+    BasicAllocator allocator{Device{DeviceType::CPU}};
 
     for (auto _ : state) {
         void* ptr = allocator.allocate(10 * 1024 * 1024);
@@ -64,7 +64,7 @@ static void BM_BasicAllocator_SingleAlloc_10MB(benchmark::State& state) {
 BENCHMARK(BM_BasicAllocator_SingleAlloc_10MB);
 
 static void BM_BasicAllocator_SingleAlloc_100MB(benchmark::State& state) {
-    BasicAllocator allocator(Device(DeviceType::CPU));
+    BasicAllocator allocator{Device{DeviceType::CPU}};
 
     for (auto _ : state) {
         void* ptr = allocator.allocate(100 * 1024 * 1024);
@@ -75,7 +75,7 @@ static void BM_BasicAllocator_SingleAlloc_100MB(benchmark::State& state) {
 BENCHMARK(BM_BasicAllocator_SingleAlloc_100MB);
 
 static void BM_BasicAllocator_SingleAlloc_1GB(benchmark::State& state) {
-    BasicAllocator allocator(Device(DeviceType::CPU));
+    BasicAllocator allocator{Device{DeviceType::CPU}};
 
     for (auto _ : state) {
         void* ptr = allocator.allocate(1024 * 1024 * 1024);
@@ -86,7 +86,7 @@ static void BM_BasicAllocator_SingleAlloc_1GB(benchmark::State& state) {
 BENCHMARK(BM_BasicAllocator_SingleAlloc_1GB);
 
 static void BM_BasicAllocator_MultipleAllocations_10MB(benchmark::State& state) {
-    BasicAllocator allocator(Device(DeviceType::CPU));  // Use default constructor
+    BasicAllocator allocator{Device{DeviceType::CPU}};  // Use uniform initialization
 
     for (auto _ : state) {
         std::vector<void*> ptrs;
@@ -107,7 +107,7 @@ BENCHMARK(BM_BasicAllocator_MultipleAllocations_10MB)
 //! Memory Reuse Benchmarks - Tests allocator's ability to reuse freed memory
 
 static void BM_BasicAllocator_MemoryReuse_1MB(benchmark::State& state) {
-    BasicAllocator allocator(Device(DeviceType::CPU));
+    BasicAllocator allocator{Device{DeviceType::CPU}};
     const size_t block_size = 1024 * 1024;  // 1MB
     const int num_blocks = state.range(0);
 
@@ -144,7 +144,7 @@ BENCHMARK(BM_BasicAllocator_MemoryReuse_1MB)
     ->Arg(128);  // 128MB total
 
 static void BM_BasicAllocator_MemoryReuse_10MB(benchmark::State& state) {
-    BasicAllocator allocator(Device(DeviceType::CPU));
+    BasicAllocator allocator{Device{DeviceType::CPU}};
     const size_t block_size = 10 * 1024 * 1024;  // 10MB
     const int num_blocks = state.range(0);
 
@@ -180,7 +180,7 @@ BENCHMARK(BM_BasicAllocator_MemoryReuse_10MB)
     ->Arg(32);  // 320MB total
 
 static void BM_BasicAllocator_MemoryReuse_MixedSizes(benchmark::State& state) {
-    BasicAllocator allocator(Device(DeviceType::CPU));
+    BasicAllocator allocator{Device{DeviceType::CPU}};
     // Mix of small, medium, and large allocations
     const std::vector<size_t> sizes = {
         1024,             // 1KB
