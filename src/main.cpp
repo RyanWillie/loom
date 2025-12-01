@@ -1,5 +1,7 @@
 #include <iostream>
 
+#include "common/dataloader/dataloader.h"
+#include "common/dataloader/mnist_dataset.h"
 #include "common/device.h"
 #include "common/dtypes.h"
 #include "common/logger.h"
@@ -91,6 +93,52 @@ int main() {
 
     const auto exists2 = AllocatorRegistry::exists(Device(DeviceType::CPU));
     logger.info("Allocator exists {}", exists2);
+
+    // Test MNIST DataLoader
+    auto& datasetLogger = Logger::getInstance("Dataset");
+    datasetLogger.info("--- MNIST DataLoader Test ---");
+    loom::MNISTDataset train_data("data/train-images.idx3-ubyte", "data/train-labels.idx1-ubyte");
+
+    datasetLogger.info("Dataset size: {}", train_data.size());
+
+    // Get first sample
+    auto sample = train_data.get(0);
+    datasetLogger.info("Sample input shape: [{}]", sample.input.size(0));
+    datasetLogger.info("Sample target shape: [{}]", sample.target.size(0));
+
+    // Print first label (one-hot)
+    datasetLogger.info("First label (one-hot): ");
+    auto label_acc = sample.target.accessor<float, 1>();
+    for (size_t i = 0; i < 10; ++i) {
+        datasetLogger.info("{}", label_acc[i]);
+    }
+
+    // Find which digit it is
+    for (size_t i = 0; i < 10; ++i) {
+        if (label_acc[i] > 0.5f) {
+            datasetLogger.info("First digit label: {}", i);
+            break;
+        }
+    }
+
+    // Check pixel range (should be [0, 1] after normalization)
+    datasetLogger.info("Pixel range: [{}, {}]", sample.input.min().item(),
+                       sample.input.max().item());
+
+    // Test DataLoader with batching
+    datasetLogger.info("--- DataLoader Test ---");
+    loom::DataLoader loader(train_data, 64, true);  // batch_size=64, shuffle=true
+    datasetLogger.info("Number of batches: {}", loader.numBatches());
+
+    // Get first batch
+    auto batch = loader.getBatch(0);
+    datasetLogger.info("Batch input shape: [{}, {}]", batch.input.size(0), batch.input.size(1));
+    datasetLogger.info("Batch target shape: [{}, {}]", batch.target.size(0), batch.target.size(1));
+
+    // Verify batch contains valid data
+    datasetLogger.info("Batch input range: [{}, {}]", batch.input.min().item(),
+                       batch.input.max().item());
+
     Logger::shutdown();
     return 0;
 }

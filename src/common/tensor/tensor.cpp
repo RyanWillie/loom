@@ -234,7 +234,13 @@ loom::Device Tensor::device() const {
 }
 
 size_t Tensor::numel() const {
-    return mStorage->size();
+    if (mShape.empty())
+        return 0;
+    size_t total = 1;
+    for (size_t dim : mShape) {
+        total *= dim;
+    }
+    return total;
 }
 
 size_t Tensor::size(const size_t dim) const {
