@@ -3,7 +3,7 @@
 #include <random>
 #include <vector>
 
-#include "cpu/pooling_allocator.h"
+#include "loom/memory/pooling_allocator.h"
 #include <gtest/gtest.h>
 
 using namespace loom;

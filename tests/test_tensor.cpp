@@ -1,7 +1,7 @@
-#include "common/device.h"
-#include "common/dtypes.h"
-#include "common/logger.h"
-#include "common/tensor/tensor.h"
+#include "loom/device.h"
+#include "loom/dtypes.h"
+#include "loom/logger.h"
+#include "loom/tensor/tensor.h"
 #include <gtest/gtest.h>
 
 using namespace loom;
@@ -1340,4 +1340,29 @@ TEST_F(TensorTest, MatmulDTypeMismatchThrows) {
     Tensor b = Tensor::ones({3, 2}, DType::FLOAT64, cpu_device);
 
     EXPECT_THROW({ a.matmul(b); }, std::runtime_error);
+}
+
+// ============================================================================
+// Variance Tests
+// ============================================================================
+
+TEST_F(TensorTest, VarianceGlobal) {
+    Device cpu_device{DeviceType::CPU};
+    Tensor t = Tensor::full({3, 3}, 2.0, DType::FLOAT32, cpu_device);
+    Tensor var = t.var();
+    EXPECT_NEAR(var.item(), 0.0, 1e-6);  // All same values -> 0 variance
+}
+
+TEST_F(TensorTest, VarianceNonZero) {
+    Device cpu_device{DeviceType::CPU};
+    // Create tensor [1, 2, 3, 4, 5] - known variance
+    Tensor t = Tensor::zeros({5}, DType::FLOAT32, cpu_device);
+    auto acc = t.accessor<float, 1>();
+    for (int i = 0; i < 5; ++i) {
+        acc[i] = static_cast<float>(i + 1);
+    }
+    
+    // Mean = 3.0, Variance = 2.0
+    Tensor var = t.var();
+    EXPECT_NEAR(var.item(), 2.0, 1e-5);
 }

@@ -1,8 +1,8 @@
-#include "cpu/pooling_allocator.h"
+#include "loom/memory/pooling_allocator.h"
 
 #include <cstdlib>
 
-#include "common/logger.h"
+#include "loom/logger.h"
 
 namespace loom {
 

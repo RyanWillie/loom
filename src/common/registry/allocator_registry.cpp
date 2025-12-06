@@ -1,10 +1,10 @@
-#include "common/registry/allocator_registry.h"
+#include "loom/registry/allocator_registry.h"
 
 #include <stdexcept>
 
-#include "common/device.h"
-#include "cpu/basic_allocator.h"
-#include "cpu/pooling_allocator.h"
+#include "loom/device.h"
+#include "loom/memory/basic_allocator.h"
+#include "loom/memory/pooling_allocator.h"
 
 namespace loom {
 

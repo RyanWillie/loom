@@ -1,10 +1,10 @@
-#include "common/memory/utils.h"
+#include "loom/memory/utils.h"
 
 #include <algorithm>
 #include <cstdlib>
 #include <stdexcept>
 
-#include "common/logger.h"
+#include "loom/logger.h"
 
 #ifdef __linux__
 #include <unistd.h>

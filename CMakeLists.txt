@@ -198,17 +198,30 @@ else()
     set(GPU_SOURCES "")
 endif()
 
-# --- Main Executable ---
-add_executable(loom src/main.cpp ${COMMON_SOURCES} ${CPU_SOURCES} ${GPU_SOURCES})
+# --- Loom Library ---
+add_library(loom SHARED ${COMMON_SOURCES} ${CPU_SOURCES} ${GPU_SOURCES})
+
+# Public include directory (users will include <loom/...>)
+target_include_directories(loom
+    PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+        $<INSTALL_INTERFACE:include>
+)
 
 if(CMAKE_CUDA_COMPILER)
-    set_target_properties(loom PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+    set_target_properties(loom PROPERTIES
+        CUDA_SEPARABLE_COMPILATION ON
+        POSITION_INDEPENDENT_CODE ON
+    )
 endif()
 
 # Apply clang-tidy only to our targets, not dependencies
 if(ENABLE_CLANG_TIDY AND CLANG_TIDY_COMMAND)
     set_target_properties(loom PROPERTIES CXX_CLANG_TIDY "${CLANG_TIDY_COMMAND}")
 endif()
+
+# --- Examples ---
+add_subdirectory(examples)
 
 # --- Tests ---
 enable_testing()

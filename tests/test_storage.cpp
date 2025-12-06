@@ -1,10 +1,10 @@
 #include <cstring>
 
-#include "common/device.h"
-#include "common/dtypes.h"
-#include "common/logger.h"
-#include "common/tensor/storage.h"
-#include "common/type_traits.h"
+#include "loom/device.h"
+#include "loom/dtypes.h"
+#include "loom/logger.h"
+#include "loom/tensor/storage.h"
+#include "loom/type_traits.h"
 #include <gtest/gtest.h>
 
 using namespace loom;
