@@ -105,6 +105,14 @@ class Tensor {
 
     // Activation Functions
     Tensor relu() const;
+    Tensor sigmoid() const;    // Sigmoid: 1 / (1 + exp(-x))
+    Tensor tanh() const;       // Hyperbolic tangent: (exp(x) - exp(-x)) / (exp(x) + exp(-x))
+    Tensor softmax(int dim = -1) const;      // Softmax normalization along dimension
+    Tensor logSoftmax(int dim = -1) const;   // Log-softmax: numerically stable log(softmax(x))
+
+    // Element-wise Mathematical Functions
+    Tensor exp() const;   // Element-wise exponential: e^x
+    Tensor log() const;   // Element-wise natural logarithm: ln(x)
 
     // Helper Functions
     [[nodiscard]] size_t numel() const;

@@ -977,10 +977,10 @@ TEST_F(AutogradTest, TwoLayerNeuralNetworkEndToEnd) {
     W2.requiresGrad(true);
 
     // Forward pass
-    Tensor h = x.matmul(W1);           // [4, 20]
-    Tensor h_relu = h.relu();          // [4, 20]
-    Tensor y = h_relu.matmul(W2);      // [4, 1]
-    Tensor loss = (y * y).mean();      // scalar
+    Tensor h = x.matmul(W1);       // [4, 20]
+    Tensor h_relu = h.relu();      // [4, 20]
+    Tensor y = h_relu.matmul(W2);  // [4, 1]
+    Tensor loss = (y * y).mean();  // scalar
 
     // Backward pass
     loss.backward(Tensor::ones({1}, DType::FLOAT32, cpu_device));
@@ -1019,6 +1019,165 @@ TEST_F(AutogradTest, TwoLayerNeuralNetworkEndToEnd) {
     EXPECT_TRUE(has_nonzero_grad);
 }
 
+// ============================================================================
+// Gradient Accumulation Edge Cases (Regression Tests)
+// ============================================================================
+
+TEST_F(AutogradTest, GradientAccumulationWithMultiplePaths) {
+    // Test gradient accumulation when a tensor receives gradients from multiple paths
+    // This is the "diamond pattern": x -> a -> c
+    //                                x -> b -> c
+
+    Tensor x = Tensor::randn({2, 3}, DType::FLOAT32, cpu_device);
+    x.requiresGrad(true);
+
+    // Create two paths from x
+    Tensor a = x * 2.0;  // Path 1: da/dx = 2
+    Tensor b = x + 1.0;  // Path 2: db/dx = 1
+
+    // Converge to c
+    Tensor c = a + b;  // dc/da = 1, dc/db = 1
+
+    // Backward pass - x should accumulate gradients from both paths
+    c.sum().backward();
+
+    // Verify gradient accumulation
+    // dc/dx = dc/da * da/dx + dc/db * db/dx = 1*2 + 1*1 = 3
+    ASSERT_NE(x.grad(), nullptr);
+    auto acc = x.grad()->accessor<float, 2>();
+    for (size_t i = 0; i < 2; ++i) {
+        for (size_t j = 0; j < 3; ++j) {
+            EXPECT_FLOAT_EQ(acc[i][j], 3.0f)
+                << "Failed at [" << i << "][" << j << "]: expected 3.0, got " << acc[i][j];
+        }
+    }
+}
+
+TEST_F(AutogradTest, GradientAccumulationWithNonContiguousTensors) {
+    // Regression test: gradient accumulation with non-contiguous intermediate tensors
+    // Previously failed when grad_input was non-contiguous in engine.cpp
+
+    Tensor x = Tensor::randn({3, 4}, DType::FLOAT32, cpu_device);
+    x.requiresGrad(true);
+
+    // Create non-contiguous tensor through transpose
+    Tensor y = x.transpose();  // Non-contiguous
+    EXPECT_FALSE(y.isContiguous());
+
+    // Further operations
+    Tensor z = y * 2.0;
+    Tensor output = z.sum();
+
+    // Backward pass
+    output.backward();
+
+    // Verify x has gradients
+    ASSERT_NE(x.grad(), nullptr);
+
+    // All gradients should be 2.0 (derivative of 2x summed)
+    auto grad_acc = x.grad()->accessor<float, 2>();
+    for (size_t i = 0; i < 3; ++i) {
+        for (size_t j = 0; j < 4; ++j) {
+            EXPECT_FLOAT_EQ(grad_acc[i][j], 2.0f);
+        }
+    }
+}
+
+TEST_F(AutogradTest, ComplexDiamondPatternWithNonContiguous) {
+    // Combined test: Multiple paths + non-contiguous tensors
+    //     x -> transpose -> a -> output
+    //     x -> b -> output
+
+    Tensor x = Tensor::randn({2, 3}, DType::FLOAT32, cpu_device);
+    x.requiresGrad(true);
+
+    // Path 1: through transpose (non-contiguous)
+    Tensor x_t = x.transpose();
+    Tensor a = x_t * 3.0;
+    Tensor a_t_back = a.transpose();  // Transpose back to [2, 3]
+
+    // Path 2: direct
+    Tensor b = x * 2.0;
+
+    // Converge
+    Tensor output = a_t_back + b;
+
+    // Backward
+    output.sum().backward();
+
+    // Verify gradient accumulation
+    // dc/dx = 3 (from path 1) + 2 (from path 2) = 5
+    ASSERT_NE(x.grad(), nullptr);
+    auto acc = x.grad()->accessor<float, 2>();
+    for (size_t i = 0; i < 2; ++i) {
+        for (size_t j = 0; j < 3; ++j) {
+            EXPECT_NEAR(acc[i][j], 5.0f, 1e-5f);
+        }
+    }
+}
+
+TEST_F(AutogradTest, GradientAccumulationWithBroadcasting) {
+    // Test gradient accumulation with broadcasting operations
+    // Common in neural networks (bias addition, normalization)
+
+    Tensor x = Tensor::ones({2, 3}, DType::FLOAT32, cpu_device);
+    x.requiresGrad(true);
+
+    // Broadcast operation (simulates bias or normalization)
+    Tensor bias = Tensor::ones({3}, DType::FLOAT32, cpu_device);
+    bias.requiresGrad(true);
+
+    Tensor y = x + bias;  // Broadcasting: [2,3] + [3] -> [2,3]
+    Tensor output = y.sum();
+
+    output.backward();
+
+    // x gradients should all be 1.0
+    ASSERT_NE(x.grad(), nullptr);
+    auto x_acc = x.grad()->accessor<float, 2>();
+    for (size_t i = 0; i < 2; ++i) {
+        for (size_t j = 0; j < 3; ++j) {
+            EXPECT_FLOAT_EQ(x_acc[i][j], 1.0f);
+        }
+    }
+
+    // bias gradients should be 2.0 (accumulated from 2 rows)
+    ASSERT_NE(bias.grad(), nullptr);
+    auto bias_acc = bias.grad()->accessor<float, 1>();
+    for (size_t j = 0; j < 3; ++j) {
+        EXPECT_FLOAT_EQ(bias_acc[j], 2.0f);
+    }
+}
+
+TEST_F(AutogradTest, MultipleBackwardCallsAccumulateGradients) {
+    // Test that calling backward multiple times accumulates gradients
+    // This is important for gradient accumulation in mini-batch training
+
+    Tensor x = Tensor::ones({2, 2}, DType::FLOAT32, cpu_device);
+    x.requiresGrad(true);
+
+    // First backward pass
+    Tensor y1 = x * 2.0;
+    y1.sum().backward();
+
+    // Check first gradient
+    ASSERT_NE(x.grad(), nullptr);
+    auto acc1 = x.grad()->accessor<float, 2>();
+    EXPECT_FLOAT_EQ(acc1[0][0], 2.0f);
+
+    // Second backward pass (should accumulate)
+    Tensor y2 = x * 3.0;
+    y2.sum().backward();
+
+    // Check accumulated gradient: 2 + 3 = 5
+    auto acc2 = x.grad()->accessor<float, 2>();
+    for (size_t i = 0; i < 2; ++i) {
+        for (size_t j = 0; j < 2; ++j) {
+            EXPECT_FLOAT_EQ(acc2[i][j], 5.0f);
+        }
+    }
+}
+
 TEST_F(AutogradTest, NeuralNetworkWithNoGradInference) {
     // Test that inference mode (NoGrad) works correctly in training workflow
     // This is a common pattern: train with gradients, evaluate without
@@ -1053,6 +1212,335 @@ TEST_F(AutogradTest, NeuralNetworkWithNoGradInference) {
 
     // Should not be able to call backward on inference result
     EXPECT_THROW(
-        { y_test.backward(Tensor::ones({2, 1}, DType::FLOAT32, cpu_device)); },
+        {
+            y_test.backward(Tensor::ones({2, 1}, DType::FLOAT32, cpu_device));
+        },
         std::runtime_error);
+}
+
+// ============================================================================
+// Phase 5: Additional Reduction and View Operation Tests
+// ============================================================================
+
+TEST_F(AutogradTest, MeanBackwardWithDimKeepDim) {
+    // Test: mean with dim and keepdim arguments
+    // Input: [[1, 2, 3], [4, 5, 6]] shape [2, 3]
+    // mean(dim=1, keepdim=True) -> [[2], [5]] shape [2, 1]
+    Tensor x = Tensor::zeros({2, 3}, DType::FLOAT32, cpu_device);
+    auto x_acc = x.accessor<float, 2>();
+    x_acc[0][0] = 1.0f;
+    x_acc[0][1] = 2.0f;
+    x_acc[0][2] = 3.0f;
+    x_acc[1][0] = 4.0f;
+    x_acc[1][1] = 5.0f;
+    x_acc[1][2] = 6.0f;
+    x.requiresGrad(true);
+
+    Tensor m = x.mean(1, true);  // mean along dim=1, keepdim=True
+
+    // Verify forward pass
+    EXPECT_EQ(m.shape(), std::vector<size_t>({2, 1}));
+    auto m_acc = m.accessor<float, 2>();
+    EXPECT_FLOAT_EQ(m_acc[0][0], 2.0f);  // (1+2+3)/3 = 2
+    EXPECT_FLOAT_EQ(m_acc[1][0], 5.0f);  // (4+5+6)/3 = 5
+
+    // Verify graph structure
+    EXPECT_TRUE(m.requiresGrad());
+    EXPECT_FALSE(m.isLeaf());
+    EXPECT_NE(m.gradFn(), nullptr);
+
+    // Backward: gradient of mean is 1/3 for all elements in each row
+    Tensor grad_output = Tensor::ones({2, 1}, DType::FLOAT32, cpu_device);
+    m.backward(grad_output);
+
+    ASSERT_NE(x.grad(), nullptr);
+    EXPECT_EQ(x.grad()->shape(), x.shape());
+
+    // Each element in a row contributes to mean, so gradient is 1/3
+    auto grad_acc = x.grad()->accessor<float, 2>();
+    float expected_grad = 1.0f / 3.0f;
+    for (size_t i = 0; i < 2; ++i) {
+        for (size_t j = 0; j < 3; ++j) {
+            EXPECT_NEAR(grad_acc[i][j], expected_grad, 1e-5);
+        }
+    }
+}
+
+TEST_F(AutogradTest, MinBackwardScalar) {
+    // Test: scalar min (reduce all elements)
+    // Input: [[1, -2, 3], [4, 5, -6]]
+    // min() -> -6 (global minimum)
+    Tensor x = Tensor::zeros({2, 3}, DType::FLOAT32, cpu_device);
+    auto x_acc = x.accessor<float, 2>();
+    x_acc[0][0] = 1.0f;
+    x_acc[0][1] = -2.0f;
+    x_acc[0][2] = 3.0f;
+    x_acc[1][0] = 4.0f;
+    x_acc[1][1] = 5.0f;
+    x_acc[1][2] = -6.0f;
+    x.requiresGrad(true);
+
+    Tensor m = x.min();
+
+    // Verify forward pass
+    EXPECT_FLOAT_EQ(m.item(), -6.0f);
+
+    // Verify graph structure
+    EXPECT_TRUE(m.requiresGrad());
+    EXPECT_FALSE(m.isLeaf());
+    EXPECT_NE(m.gradFn(), nullptr);
+
+    // Backward: gradient flows only to the minimum position
+    m.backward(Tensor::ones({1}, DType::FLOAT32, cpu_device));
+
+    ASSERT_NE(x.grad(), nullptr);
+    auto grad_acc = x.grad()->accessor<float, 2>();
+
+    // Only position [1][2] (value -6) should have gradient
+    EXPECT_FLOAT_EQ(grad_acc[0][0], 0.0f);
+    EXPECT_FLOAT_EQ(grad_acc[0][1], 0.0f);
+    EXPECT_FLOAT_EQ(grad_acc[0][2], 0.0f);
+    EXPECT_FLOAT_EQ(grad_acc[1][0], 0.0f);
+    EXPECT_FLOAT_EQ(grad_acc[1][1], 0.0f);
+    EXPECT_FLOAT_EQ(grad_acc[1][2], 1.0f);  // Gradient at min position
+}
+
+TEST_F(AutogradTest, MinBackwardWithDimKeepDim) {
+    // Test: min with dim and keepdim
+    // Input: [[3, 1, 2], [6, 4, 5]] shape [2, 3]
+    // min(dim=1, keepdim=True) -> [[1], [4]] shape [2, 1]
+    Tensor x = Tensor::zeros({2, 3}, DType::FLOAT32, cpu_device);
+    auto x_acc = x.accessor<float, 2>();
+    x_acc[0][0] = 3.0f;
+    x_acc[0][1] = 1.0f;  // min in row 0
+    x_acc[0][2] = 2.0f;
+    x_acc[1][0] = 6.0f;
+    x_acc[1][1] = 4.0f;  // min in row 1
+    x_acc[1][2] = 5.0f;
+    x.requiresGrad(true);
+
+    Tensor m = x.min(1, true);  // min along dim=1, keepdim=True
+
+    // Verify forward pass
+    EXPECT_EQ(m.shape(), std::vector<size_t>({2, 1}));
+    auto m_acc = m.accessor<float, 2>();
+    EXPECT_FLOAT_EQ(m_acc[0][0], 1.0f);
+    EXPECT_FLOAT_EQ(m_acc[1][0], 4.0f);
+
+    // Verify graph structure
+    EXPECT_TRUE(m.requiresGrad());
+    EXPECT_NE(m.gradFn(), nullptr);
+
+    // Backward: gradient flows only to min positions in each row
+    Tensor grad_output = Tensor::ones({2, 1}, DType::FLOAT32, cpu_device);
+    m.backward(grad_output);
+
+    ASSERT_NE(x.grad(), nullptr);
+    auto grad_acc = x.grad()->accessor<float, 2>();
+
+    // Row 0: only position [0][1] (value 1) gets gradient
+    EXPECT_FLOAT_EQ(grad_acc[0][0], 0.0f);
+    EXPECT_FLOAT_EQ(grad_acc[0][1], 1.0f);
+    EXPECT_FLOAT_EQ(grad_acc[0][2], 0.0f);
+
+    // Row 1: only position [1][1] (value 4) gets gradient
+    EXPECT_FLOAT_EQ(grad_acc[1][0], 0.0f);
+    EXPECT_FLOAT_EQ(grad_acc[1][1], 1.0f);
+    EXPECT_FLOAT_EQ(grad_acc[1][2], 0.0f);
+}
+
+TEST_F(AutogradTest, DotBackward) {
+    // Test: dot product backward
+    // x = [1, 2, 3], y = [4, 5, 6]
+    // z = dot(x, y) = 1*4 + 2*5 + 3*6 = 4 + 10 + 18 = 32
+    // ∂z/∂x = y = [4, 5, 6]
+    // ∂z/∂y = x = [1, 2, 3]
+    Tensor x = Tensor::zeros({3}, DType::FLOAT32, cpu_device);
+    Tensor y = Tensor::zeros({3}, DType::FLOAT32, cpu_device);
+
+    auto x_acc = x.accessor<float, 1>();
+    auto y_acc = y.accessor<float, 1>();
+    x_acc[0] = 1.0f;
+    x_acc[1] = 2.0f;
+    x_acc[2] = 3.0f;
+    y_acc[0] = 4.0f;
+    y_acc[1] = 5.0f;
+    y_acc[2] = 6.0f;
+
+    x.requiresGrad(true);
+    y.requiresGrad(true);
+
+    Tensor z = x.dot(y);
+
+    // Verify forward pass
+    EXPECT_FLOAT_EQ(z.item(), 32.0f);
+
+    // Verify graph structure
+    EXPECT_TRUE(z.requiresGrad());
+    EXPECT_FALSE(z.isLeaf());
+    EXPECT_NE(z.gradFn(), nullptr);
+
+    // Backward
+    z.backward(Tensor::ones({1}, DType::FLOAT32, cpu_device));
+
+    // Check x gradients: should be y
+    ASSERT_NE(x.grad(), nullptr);
+    auto x_grad_acc = x.grad()->accessor<float, 1>();
+    EXPECT_FLOAT_EQ(x_grad_acc[0], 4.0f);
+    EXPECT_FLOAT_EQ(x_grad_acc[1], 5.0f);
+    EXPECT_FLOAT_EQ(x_grad_acc[2], 6.0f);
+
+    // Check y gradients: should be x
+    ASSERT_NE(y.grad(), nullptr);
+    auto y_grad_acc = y.grad()->accessor<float, 1>();
+    EXPECT_FLOAT_EQ(y_grad_acc[0], 1.0f);
+    EXPECT_FLOAT_EQ(y_grad_acc[1], 2.0f);
+    EXPECT_FLOAT_EQ(y_grad_acc[2], 3.0f);
+}
+
+TEST_F(AutogradTest, PermuteBackward) {
+    // Test: permute backward
+    // Input shape: [2, 3, 4]
+    // permute([2, 0, 1]) -> output shape: [4, 2, 3]
+    // Gradient should flow back with inverse permutation
+    Tensor x = Tensor::randn({2, 3, 4}, DType::FLOAT32, cpu_device);
+    x.requiresGrad(true);
+
+    // Permute: [2, 3, 4] -> [4, 2, 3]
+    Tensor y = x.permute({2, 0, 1});
+
+    // Verify forward pass shape
+    EXPECT_EQ(y.shape(), std::vector<size_t>({4, 2, 3}));
+
+    // Verify graph structure
+    EXPECT_TRUE(y.requiresGrad());
+    EXPECT_NE(y.gradFn(), nullptr);
+
+    // Backward with ones
+    Tensor grad_output = Tensor::ones({4, 2, 3}, DType::FLOAT32, cpu_device);
+    Tensor loss = (y * grad_output).sum();
+    loss.backward(Tensor::ones({1}, DType::FLOAT32, cpu_device));
+
+    // Check that gradient has correct shape
+    ASSERT_NE(x.grad(), nullptr);
+    EXPECT_EQ(x.grad()->shape(), std::vector<size_t>({2, 3, 4}));
+
+    // Gradient values should all be 1 (since we used ones for grad_output)
+    auto grad_flat = x.grad()->contiguous().flatten();
+    auto grad_acc = grad_flat.accessor<float, 1>();
+    for (size_t i = 0; i < grad_flat.numel(); ++i) {
+        EXPECT_FLOAT_EQ(grad_acc[i], 1.0f);
+    }
+}
+
+TEST_F(AutogradTest, PermuteBackwardNumericalCheck) {
+    // Numerical gradient check for permute
+    // f(x) = sum(permute(x, [1, 0]))
+    Tensor x = Tensor::zeros({2, 3}, DType::FLOAT32, cpu_device);
+    auto x_acc = x.accessor<float, 2>();
+    x_acc[0][0] = 1.0f;
+    x_acc[0][1] = 2.0f;
+    x_acc[0][2] = 3.0f;
+    x_acc[1][0] = 4.0f;
+    x_acc[1][1] = 5.0f;
+    x_acc[1][2] = 6.0f;
+    x.requiresGrad(true);
+
+    Tensor y = x.permute({1, 0});  // Transpose: [2, 3] -> [3, 2]
+    Tensor loss = y.sum();
+
+    loss.backward(Tensor::ones({1}, DType::FLOAT32, cpu_device));
+
+    // Gradient of sum is 1 everywhere, permute doesn't change this
+    ASSERT_NE(x.grad(), nullptr);
+    auto grad_acc = x.grad()->accessor<float, 2>();
+    for (size_t i = 0; i < 2; ++i) {
+        for (size_t j = 0; j < 3; ++j) {
+            EXPECT_FLOAT_EQ(grad_acc[i][j], 1.0f);
+        }
+    }
+}
+
+TEST_F(AutogradTest, SliceBackward) {
+    // Test: slice backward
+    // Input shape: [5, 4]
+    // slice(dim=0, start=1, end=4) -> output shape: [3, 4] (rows 1, 2, 3)
+    // Gradient should scatter back to the sliced positions
+    Tensor x = Tensor::randn({5, 4}, DType::FLOAT32, cpu_device);
+    x.requiresGrad(true);
+
+    // Slice rows 1 through 3 (inclusive)
+    Tensor y = x.slice(0, 1, 4);
+
+    // Verify forward pass shape
+    EXPECT_EQ(y.shape(), std::vector<size_t>({3, 4}));
+
+    // Verify graph structure
+    EXPECT_TRUE(y.requiresGrad());
+    EXPECT_NE(y.gradFn(), nullptr);
+
+    // Backward with gradient of all 2's
+    Tensor grad_output = Tensor::full({3, 4}, 2.0, DType::FLOAT32, cpu_device);
+    Tensor loss = (y * grad_output).sum();
+    loss.backward(Tensor::ones({1}, DType::FLOAT32, cpu_device));
+
+    // Check gradient shape
+    ASSERT_NE(x.grad(), nullptr);
+    EXPECT_EQ(x.grad()->shape(), std::vector<size_t>({5, 4}));
+
+    auto grad_acc = x.grad()->accessor<float, 2>();
+
+    // Row 0 should be zero (not in slice)
+    for (size_t j = 0; j < 4; ++j) {
+        EXPECT_FLOAT_EQ(grad_acc[0][j], 0.0f);
+    }
+
+    // Rows 1, 2, 3 should have gradient of 2
+    for (size_t i = 1; i < 4; ++i) {
+        for (size_t j = 0; j < 4; ++j) {
+            EXPECT_FLOAT_EQ(grad_acc[i][j], 2.0f);
+        }
+    }
+
+    // Row 4 should be zero (not in slice)
+    for (size_t j = 0; j < 4; ++j) {
+        EXPECT_FLOAT_EQ(grad_acc[4][j], 0.0f);
+    }
+}
+
+TEST_F(AutogradTest, SliceBackwardColumnSlice) {
+    // Test: slice along different dimension (columns)
+    // Input shape: [3, 5]
+    // slice(dim=1, start=1, end=3) -> output shape: [3, 2] (columns 1, 2)
+    Tensor x = Tensor::zeros({3, 5}, DType::FLOAT32, cpu_device);
+    auto x_acc = x.accessor<float, 2>();
+    // Fill with unique values
+    for (size_t i = 0; i < 3; ++i) {
+        for (size_t j = 0; j < 5; ++j) {
+            x_acc[i][j] = static_cast<float>(i * 5 + j);
+        }
+    }
+    x.requiresGrad(true);
+
+    // Slice columns 1 and 2
+    Tensor y = x.slice(1, 1, 3);
+
+    // Verify forward pass
+    EXPECT_EQ(y.shape(), std::vector<size_t>({3, 2}));
+
+    // Backward with ones
+    Tensor loss = y.sum();
+    loss.backward(Tensor::ones({1}, DType::FLOAT32, cpu_device));
+
+    ASSERT_NE(x.grad(), nullptr);
+    auto grad_acc = x.grad()->accessor<float, 2>();
+
+    // Check gradient pattern
+    for (size_t i = 0; i < 3; ++i) {
+        EXPECT_FLOAT_EQ(grad_acc[i][0], 0.0f);  // Column 0: not sliced
+        EXPECT_FLOAT_EQ(grad_acc[i][1], 1.0f);  // Column 1: sliced
+        EXPECT_FLOAT_EQ(grad_acc[i][2], 1.0f);  // Column 2: sliced
+        EXPECT_FLOAT_EQ(grad_acc[i][3], 0.0f);  // Column 3: not sliced
+        EXPECT_FLOAT_EQ(grad_acc[i][4], 0.0f);  // Column 4: not sliced
+    }
 }

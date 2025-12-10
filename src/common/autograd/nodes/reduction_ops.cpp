@@ -20,14 +20,27 @@ std::vector<Tensor> SumBackward::backward(const Tensor& gradOutput) {
     // equally (with derivative 1), so we just broadcast the output gradient
     // to match the input shape.
     //
-    // Example: If input was [2, 3] and sum gave scalar, then
-    //          gradOutput is scalar and we expand it to [2, 3]
+    // Example 1: If input was [2, 3] and sum() gave scalar [1],
+    //            gradOutput is [1] and we expand it to [2, 3]
+    // Example 2: If input was [2, 3] and sum(dim=1, keepdim=True) gave [2, 1],
+    //            gradOutput is [2, 1] and we expand it to [2, 3]
 
-    // Create gradient tensor filled with the scalar gradient value
-    Tensor grad_input =
-        Tensor::full(mInputShape, gradOutput.item(), gradOutput.dtype(), gradOutput.device());
+    // Handle both scalar and non-scalar gradOutput
+    if (gradOutput.numel() == 1) {
+        // Scalar case - fill with the scalar value
+        Tensor grad_input =
+            Tensor::full(mInputShape, gradOutput.item(), gradOutput.dtype(), gradOutput.device());
+        return {grad_input};
+    } else {
+        // Non-scalar case - broadcast gradOutput to input shape
+        // This happens with sum(dim, keepdim=True)
+        Tensor grad_input = Tensor::zeros(mInputShape, gradOutput.dtype(), gradOutput.device());
 
-    return {grad_input};
+        // Use broadcasting: each element of gradOutput is copied to multiple positions in grad_input
+        grad_input = grad_input + gradOutput;  // Broadcasting addition
+
+        return {grad_input};
+    }
 }
 
 // ============================================================================
@@ -47,12 +60,26 @@ std::vector<Tensor> MeanBackward::backward(const Tensor& gradOutput) {
     //
     // So each element gets gradient / n
 
-    // Broadcast gradient divided by number of elements
-    double grad_value = gradOutput.item() / static_cast<double>(mNumElements);
-    Tensor grad_input =
-        Tensor::full(mInputShape, grad_value, gradOutput.dtype(), gradOutput.device());
+    // Handle both scalar and non-scalar gradOutput
+    if (gradOutput.numel() == 1) {
+        // Scalar case - fill with the scalar value divided by n
+        double grad_value = gradOutput.item() / static_cast<double>(mNumElements);
+        Tensor grad_input =
+            Tensor::full(mInputShape, grad_value, gradOutput.dtype(), gradOutput.device());
+        return {grad_input};
+    } else {
+        // Non-scalar case - broadcast gradOutput to input shape, then divide by n
+        // This happens with mean(dim, keepdim=True)
+        Tensor grad_input = Tensor::zeros(mInputShape, gradOutput.dtype(), gradOutput.device());
 
-    return {grad_input};
+        // Use broadcasting: each element of gradOutput is copied to multiple positions
+        grad_input = grad_input + gradOutput;  // Broadcasting addition
+
+        // Divide by number of elements that were averaged
+        grad_input = grad_input / static_cast<double>(mNumElements);
+
+        return {grad_input};
+    }
 }
 
 }  // namespace autograd

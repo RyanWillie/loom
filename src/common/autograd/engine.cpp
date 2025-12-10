@@ -50,7 +50,7 @@ void Engine::backward(Tensor& root, const Tensor& gradOutput) {
     //   - This gives you nodes in reverse topological order
     //   - Log the number of nodes found
     std::vector<std::shared_ptr<Node>> sorted = topologicalSort(root.gradFn());
-    logger.info("Topological sort completed {} nodes", sorted.size());
+    logger.debug("Topological sort completed {} nodes", sorted.size());
 
     // STEP 6: Create gradient map for intermediate tensors
     //   - Use std::unordered_map<Node*, Tensor>
@@ -106,7 +106,7 @@ void Engine::backward(Tensor& root, const Tensor& gradOutput) {
     }
 
     // STEP 8: Log completion
-    logger.info("Backward pass completed");
+    logger.debug("Backward pass completed");
     return;
 }
 

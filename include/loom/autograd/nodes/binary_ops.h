@@ -113,6 +113,35 @@ class DivBackward : public Node {
     std::vector<size_t> mShapeY;
 };
 
+// DotBackward: Backward pass for dot product (1D vector inner product)
+// Forward:  z = dot(x, y) = sum(x[i] * y[i])  (scalar result)
+// Backward: ∂L/∂x = ∂L/∂z * y  (gradient is the other vector)
+//           ∂L/∂y = ∂L/∂z * x
+//
+// Key insight: Dot product gradient w.r.t. one input is the other input
+// scaled by the output gradient. Since output is scalar, we broadcast
+// the scalar gradient to the input shape.
+//
+// Example: If x = [1, 2, 3], y = [4, 5, 6], then z = 1*4 + 2*5 + 3*6 = 32
+//          If ∂L/∂z = k (scalar), then:
+//          ∂L/∂x = k * [4, 5, 6] = k * y
+//          ∂L/∂y = k * [1, 2, 3] = k * x
+class DotBackward : public Node {
+  public:
+    // Constructor: Save copies of both input vectors
+    // We NEED the values of x and y to compute gradients
+    DotBackward(const Tensor& x, const Tensor& y);
+
+    std::vector<Tensor> backward(const Tensor& gradOutput) override;
+
+    std::string name() const override { return "DotBackward"; }
+    size_t numInputs() const override { return 2; }
+
+  private:
+    Tensor mSavedX;  // Saved copy of x for backward pass
+    Tensor mSavedY;  // Saved copy of y for backward pass
+};
+
 // ============================================================================
 // Scalar Operation Backward Nodes
 // ============================================================================

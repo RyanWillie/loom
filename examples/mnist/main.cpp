@@ -1,9 +1,17 @@
+#include <algorithm>
+#include <iomanip>
 #include <iostream>
 
 #include "loom/dataloader/dataloader.h"
 #include "loom/dataloader/mnist_dataset.h"
 #include "loom/device.h"
 #include "loom/logger.h"
+#include "loom/nn/activation.h"
+#include "loom/nn/linear.h"
+#include "loom/nn/loss.h"
+#include "loom/nn/sequential.h"
+#include "loom/nn/trainer.h"
+#include "loom/optim/sgd.h"
 #include "loom/tensor/tensor.h"
 
 using namespace loom;
@@ -14,7 +22,7 @@ int main() {
     Logger::setLogOutput(LogOutput::CONSOLE);
     auto& logger = Logger::getInstance("MNIST");
 
-    logger.info("=== Loom MNIST Example ===");
+    logger.info("=== Loom MNIST Training Example ===");
 
     // Device configuration
     Device device(DeviceType::CPU);
@@ -23,87 +31,109 @@ int main() {
     // ========================================================================
     // Load MNIST Dataset
     // ========================================================================
-    logger.info("--- Loading MNIST Dataset ---");
+    logger.info("\n--- Loading MNIST Dataset ---");
     MNISTDataset train_data("data/train-images.idx3-ubyte", "data/train-labels.idx1-ubyte");
+    MNISTDataset test_data("data/t10k-images.idx3-ubyte", "data/t10k-labels.idx1-ubyte");
+
     logger.info("Training samples: {}", train_data.size());
-    logger.info("Image size: {} pixels", MNISTDataset::sImageSize);
-    logger.info("Number of classes: {}", MNISTDataset::sClasses);
+    logger.info("Test samples: {}", test_data.size());
+    logger.info("Input dimension: {} pixels", MNISTDataset::sImageSize);
+    logger.info("Output classes: {}", MNISTDataset::sClasses);
 
     // ========================================================================
-    // Inspect a Single Sample
+    // Create DataLoaders
     // ========================================================================
-    logger.info("--- Inspecting First Sample ---");
-    auto sample = train_data.get(0);
-
-    logger.info("Input shape:  [{}]", sample.input.size(0));
-    logger.info("Target shape: [{}]", sample.target.size(0));
-    logger.info("Pixel range:  [{:.3f}, {:.3f}]", sample.input.min().item(),
-                sample.input.max().item());
-
-    // Find the digit label
-    auto label_acc = sample.target.accessor<float, 1>();
-    for (size_t i = 0; i < MNISTDataset::sClasses; ++i) {
-        if (label_acc[i] > 0.5f) {
-            logger.info("Label: {}", i);
-            break;
-        }
-    }
-
-    // ========================================================================
-    // Create DataLoader with Batching
-    // ========================================================================
-    logger.info("--- Creating DataLoader ---");
     const size_t batch_size = 64;
-    const bool shuffle = true;
-    DataLoader train_loader(train_data, batch_size, shuffle);
+    DataLoader train_loader(train_data, batch_size, /*shuffle=*/true);
+    DataLoader test_loader(test_data, batch_size, /*shuffle=*/false);
 
     logger.info("Batch size: {}", batch_size);
-    logger.info("Number of batches: {}", train_loader.numBatches());
-    logger.info("Shuffle: {}", shuffle ? "enabled" : "disabled");
+    logger.info("Training batches: {}", train_loader.numBatches());
+    logger.info("Test batches: {}", test_loader.numBatches());
 
     // ========================================================================
-    // Process First Batch
+    // Build Neural Network Model
     // ========================================================================
-    logger.info("--- Processing First Batch ---");
-    auto batch = train_loader.getBatch(0);
+    logger.info("--- Building Model ---");
 
-    logger.info("Batch input shape:  [{}, {}]", batch.input.size(0), batch.input.size(1));
-    logger.info("Batch target shape: [{}, {}]", batch.target.size(0), batch.target.size(1));
-    logger.info("Batch input range:  [{:.3f}, {:.3f}]", batch.input.min().item(),
-                batch.input.max().item());
+    // Create model using Sequential for clean composition
+    auto model =
+        std::make_shared<nn::Sequential>(std::initializer_list<std::shared_ptr<nn::Module>>{
+            std::make_shared<nn::Linear>(784, 128), std::make_shared<nn::ReLU>(),
+            std::make_shared<nn::Linear>(128, 10)});
+
+    logger.info("Model architecture:");
+    logger.info("  Linear(784 -> 128)");
+    logger.info("  ReLU()");
+    logger.info("  Linear(128 -> 10)");
+
+    // Collect parameters from the entire model
+    auto params = model->parameters();
+    logger.info("Total parameters: {}", params.size());
 
     // ========================================================================
-    // Simulate Training Loop (Framework Demo)
+    // Setup Loss Function and Optimizer
     // ========================================================================
-    logger.info("--- Simulating Training Loop ---");
-    const size_t num_epochs = 2;
-    const size_t batches_to_show = 3;
+    logger.info("--- Setup Training Components ---");
 
-    for (size_t epoch = 0; epoch < num_epochs; ++epoch) {
-        logger.info("Epoch {}/{}", epoch + 1, num_epochs);
+    auto criterion = std::make_shared<nn::CrossEntropyLoss>();
+    logger.info("Loss function: CrossEntropyLoss");
 
-        // In a real training loop, you'd:
-        // 1. Forward pass: predictions = model(batch.input)
-        // 2. Compute loss: loss = criterion(predictions, batch.target)
-        // 3. Backward pass: loss.backward()
-        // 4. Update weights: optimizer.step()
+    const double learning_rate = 0.01;
+    auto optimizer = std::make_shared<optim::SGD>(params, learning_rate);
+    logger.info("Optimizer: SGD (lr={:.4f})", learning_rate);
 
-        for (size_t batch_idx = 0; batch_idx < std::min(batches_to_show, train_loader.numBatches());
-             ++batch_idx) {
-            auto batch = train_loader.getBatch(batch_idx);
+    // ========================================================================
+    // Training with Trainer
+    // ========================================================================
+    logger.info("--- Starting Training ---");
+    const size_t num_epochs = 5;
+    const size_t log_interval = 100;
 
-            // Simulate forward pass - just compute mean pixel value for demo
-            float mean_pixel = batch.input.mean().item();
+    // Create trainer with default ConsoleMonitor
+    auto trainer = std::make_shared<nn::Trainer>(model, optimizer, criterion);
 
-            logger.info("  Batch {}/{}: mean_pixel={:.4f}", batch_idx + 1,
-                        train_loader.numBatches(), mean_pixel);
+    // Train the model
+    const auto& history = trainer->train(train_loader, test_loader, num_epochs, log_interval);
+
+    // ========================================================================
+    // Sample Predictions from Test Set
+    // ========================================================================
+    logger.info("--- Sample Predictions (Test Set) ---");
+
+    for (size_t i = 0; i < 5; ++i) {
+        auto sample = test_data.get(i);
+
+        // Inference: forward pass with batch dimension [784] -> [1, 784]
+        Tensor input = sample.input.unsqueeze(0);
+        Tensor output = model->forward(input);
+
+        // Get predictions (argmax)
+        auto output_acc = output.accessor<float, 2>();
+        size_t pred_class = 0;
+        float max_score = output_acc[0][0];
+        for (size_t j = 1; j < MNISTDataset::sClasses; ++j) {
+            if (output_acc[0][j] > max_score) {
+                max_score = output_acc[0][j];
+                pred_class = j;
+            }
         }
 
-        // Reshuffle for next epoch
-        train_loader.reset();
+        // Get true label
+        auto target_acc = sample.target.accessor<float, 1>();
+        size_t true_class = 0;
+        for (size_t j = 0; j < MNISTDataset::sClasses; ++j) {
+            if (target_acc[j] > 0.5f) {
+                true_class = j;
+                break;
+            }
+        }
+
+        logger.info("Test Sample {}: Predicted={}, True={} {}", i, pred_class, true_class,
+                    (pred_class == true_class) ? "✓" : "✗");
     }
 
-    logger.info("=== MNIST Example Complete ===");
+    logger.info("=== MNIST Training Complete ===");
     Logger::shutdown();
     return 0;
 }

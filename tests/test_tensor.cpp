@@ -528,6 +528,196 @@ TEST_F(TensorTest, TensorOutOfPlaceDivision) {
     EXPECT_EQ(result.shape(), t1.shape());
 }
 
+// Edge Case: Shared Storage (Aliasing)
+TEST_F(TensorTest, AdditionWithSharedStorage) {
+    // Create a tensor
+    Tensor a = Tensor::ones({2, 2}, DType::FLOAT32, cpu_device) * 4.0;
+
+    // Create a shallow copy that shares storage
+    Tensor b = a;
+
+    // Add a + b (both share storage)
+    Tensor c = a + b;
+
+    // Should be 4+4=8 per element, 8*4 elements = 32 total
+    EXPECT_FLOAT_EQ(c.sum().item(), 32.0f);
+}
+
+TEST_F(TensorTest, InPlaceAdditionWithSharedStorage) {
+    // Create a tensor
+    Tensor a = Tensor::ones({2, 2}, DType::FLOAT32, cpu_device) * 4.0;
+
+    // Create a shallow copy
+    Tensor b = a;
+
+    // a += b where both share storage
+    a += b;
+
+    // Should be (4+4)*4 = 32
+    EXPECT_FLOAT_EQ(a.sum().item(), 32.0f);
+}
+
+// Edge Case: Non-Contiguous Tensors (Critical - Regression Test)
+TEST_F(TensorTest, InPlaceAdditionWithTransposedTensor) {
+    // Regression test for gradient accumulation bug
+    // Previously failed: in-place ops didn't handle non-contiguous tensors
+    Tensor a = Tensor::ones({2, 3}, DType::FLOAT32, cpu_device) * 2.0;
+    Tensor b = Tensor::ones({3, 2}, DType::FLOAT32, cpu_device) * 3.0;
+    Tensor b_t = b.transpose();  // Non-contiguous!
+
+    EXPECT_TRUE(a.isContiguous());
+    EXPECT_FALSE(b_t.isContiguous());
+    EXPECT_EQ(b_t.shape(), a.shape());
+
+    // In-place addition with non-contiguous tensor
+    a += b_t;
+
+    // Verify result: 2 + 3 = 5 for all elements
+    auto acc = a.accessor<float, 2>();
+    for (size_t i = 0; i < 2; ++i) {
+        for (size_t j = 0; j < 3; ++j) {
+            EXPECT_FLOAT_EQ(acc[i][j], 5.0f) << "Failed at [" << i << "][" << j << "]";
+        }
+    }
+}
+
+TEST_F(TensorTest, InPlaceSubtractionWithTransposedTensor) {
+    Tensor a = Tensor::ones({2, 3}, DType::FLOAT32, cpu_device) * 10.0;
+    Tensor b = Tensor::ones({3, 2}, DType::FLOAT32, cpu_device) * 3.0;
+    Tensor b_t = b.transpose();
+
+    EXPECT_FALSE(b_t.isContiguous());
+
+    a -= b_t;
+
+    // Verify result: 10 - 3 = 7
+    auto acc = a.accessor<float, 2>();
+    for (size_t i = 0; i < 2; ++i) {
+        for (size_t j = 0; j < 3; ++j) {
+            EXPECT_FLOAT_EQ(acc[i][j], 7.0f);
+        }
+    }
+}
+
+TEST_F(TensorTest, InPlaceMultiplicationWithTransposedTensor) {
+    Tensor a = Tensor::ones({2, 3}, DType::FLOAT32, cpu_device) * 2.0;
+    Tensor b = Tensor::ones({3, 2}, DType::FLOAT32, cpu_device) * 4.0;
+    Tensor b_t = b.transpose();
+
+    EXPECT_FALSE(b_t.isContiguous());
+
+    a *= b_t;
+
+    // Verify result: 2 * 4 = 8
+    auto acc = a.accessor<float, 2>();
+    for (size_t i = 0; i < 2; ++i) {
+        for (size_t j = 0; j < 3; ++j) {
+            EXPECT_FLOAT_EQ(acc[i][j], 8.0f);
+        }
+    }
+}
+
+TEST_F(TensorTest, InPlaceDivisionWithTransposedTensor) {
+    Tensor a = Tensor::ones({2, 3}, DType::FLOAT32, cpu_device) * 12.0;
+    Tensor b = Tensor::ones({3, 2}, DType::FLOAT32, cpu_device) * 3.0;
+    Tensor b_t = b.transpose();
+
+    EXPECT_FALSE(b_t.isContiguous());
+
+    a /= b_t;
+
+    // Verify result: 12 / 3 = 4
+    auto acc = a.accessor<float, 2>();
+    for (size_t i = 0; i < 2; ++i) {
+        for (size_t j = 0; j < 3; ++j) {
+            EXPECT_FLOAT_EQ(acc[i][j], 4.0f);
+        }
+    }
+}
+
+TEST_F(TensorTest, OutOfPlaceAdditionWithTransposedTensor) {
+    // Verify out-of-place operations also work correctly
+    Tensor a = Tensor::ones({2, 3}, DType::FLOAT32, cpu_device) * 2.0;
+    Tensor b = Tensor::ones({3, 2}, DType::FLOAT32, cpu_device) * 3.0;
+    Tensor b_t = b.transpose();
+
+    EXPECT_FALSE(b_t.isContiguous());
+
+    Tensor c = a + b_t;
+
+    // Verify result
+    auto acc = c.accessor<float, 2>();
+    for (size_t i = 0; i < 2; ++i) {
+        for (size_t j = 0; j < 3; ++j) {
+            EXPECT_FLOAT_EQ(acc[i][j], 5.0f);
+        }
+    }
+
+    // Original tensors should be unchanged
+    auto acc_a = a.accessor<float, 2>();
+    EXPECT_FLOAT_EQ(acc_a[0][0], 2.0f);
+}
+
+TEST_F(TensorTest, ArithmeticWithTransposeInBroadcastPattern) {
+    // Test arithmetic that mimics log-softmax pattern: subtraction with broadcasted non-contiguous
+    // tensor This is the exact pattern that exposed the original bug
+    Tensor a = Tensor::ones({2, 3}, DType::FLOAT32, cpu_device);
+
+    // Create values [[1,2,3], [4,5,6]]
+    auto acc_a = a.accessor<float, 2>();
+    acc_a[0][0] = 1.0f;
+    acc_a[0][1] = 2.0f;
+    acc_a[0][2] = 3.0f;
+    acc_a[1][0] = 4.0f;
+    acc_a[1][1] = 5.0f;
+    acc_a[1][2] = 6.0f;
+
+    // max with keepdim=true (may or may not be non-contiguous depending on implementation)
+    Tensor max_vals = a.max(-1, true);  // Shape: [2, 1]
+
+    EXPECT_EQ(max_vals.shape()[0], 2);
+    EXPECT_EQ(max_vals.shape()[1], 1);
+
+    // This should work correctly (tests broadcasting pattern from log-softmax)
+    Tensor result = a - max_vals;  // Subtract max from each row
+
+    // Verify result
+    auto acc_r = result.accessor<float, 2>();
+    EXPECT_FLOAT_EQ(acc_r[0][0], 1.0f - 3.0f);  // 1 - max(1,2,3)
+    EXPECT_FLOAT_EQ(acc_r[0][1], 2.0f - 3.0f);
+    EXPECT_FLOAT_EQ(acc_r[0][2], 3.0f - 3.0f);
+    EXPECT_FLOAT_EQ(acc_r[1][0], 4.0f - 6.0f);  // 4 - max(4,5,6)
+    EXPECT_FLOAT_EQ(acc_r[1][1], 5.0f - 6.0f);
+    EXPECT_FLOAT_EQ(acc_r[1][2], 6.0f - 6.0f);
+}
+
+TEST_F(TensorTest, InPlaceOperationWithBothNonContiguous) {
+    // Test when BOTH operands are non-contiguous
+    Tensor a = Tensor::ones({2, 3}, DType::FLOAT32, cpu_device) * 2.0;
+    Tensor b = Tensor::ones({2, 3}, DType::FLOAT32, cpu_device) * 3.0;
+
+    // Make both non-contiguous through transpose->transpose (gets back to original shape)
+    Tensor a_view = a.transpose().transpose();
+    Tensor b_view = b.transpose().transpose();
+
+    // Note: Double transpose may optimize back to contiguous in some implementations
+    // So let's use a different approach: permute on 3D tensor
+    Tensor a3d = Tensor::ones({2, 3, 4}, DType::FLOAT32, cpu_device) * 2.0;
+    Tensor b3d = Tensor::ones({2, 3, 4}, DType::FLOAT32, cpu_device) * 3.0;
+
+    Tensor a_perm = a3d.permute({0, 2, 1});  // [2, 4, 3] - non-contiguous
+    Tensor b_perm = b3d.permute({0, 2, 1});  // [2, 4, 3] - non-contiguous
+
+    EXPECT_FALSE(a_perm.isContiguous());
+    EXPECT_FALSE(b_perm.isContiguous());
+
+    // In-place operation with both non-contiguous
+    a_perm += b_perm;
+
+    // Verify result: 2 + 3 = 5
+    EXPECT_FLOAT_EQ(a_perm.sum().item(), 2 * 4 * 3 * 5.0f);
+}
+
 // Tensor-Scalar In-Place Operations
 TEST_F(TensorTest, ScalarInPlaceAddition) {
     Tensor tensor = Tensor::ones({2, 3}, DType::FLOAT32, cpu_device);
@@ -1361,8 +1551,893 @@ TEST_F(TensorTest, VarianceNonZero) {
     for (int i = 0; i < 5; ++i) {
         acc[i] = static_cast<float>(i + 1);
     }
-    
+
     // Mean = 3.0, Variance = 2.0
     Tensor var = t.var();
     EXPECT_NEAR(var.item(), 2.0, 1e-5);
+}
+
+// ============================================================================
+// Error Handling Tests
+// ============================================================================
+
+TEST_F(TensorTest, InvalidReshapeThrows) {
+    Tensor t = Tensor::ones({2, 3}, DType::FLOAT32, cpu_device);
+    // 6 elements can't reshape to 5 elements
+    EXPECT_THROW(t.reshape({5}), std::runtime_error);
+}
+
+TEST_F(TensorTest, InvalidReshapeDifferentSize) {
+    Tensor t = Tensor::ones({3, 4}, DType::FLOAT32, cpu_device);
+    // 12 elements can't reshape to 10 elements
+    EXPECT_THROW(t.reshape({2, 5}), std::runtime_error);
+}
+
+TEST_F(TensorTest, DTypeMismatchAddThrows) {
+    Tensor t1 = Tensor::ones({2, 2}, DType::FLOAT32, cpu_device);
+    Tensor t2 = Tensor::ones({2, 2}, DType::FLOAT64, cpu_device);
+    EXPECT_THROW(t1 + t2, std::runtime_error);
+}
+
+TEST_F(TensorTest, DTypeMismatchSubThrows) {
+    Tensor t1 = Tensor::ones({2, 2}, DType::FLOAT32, cpu_device);
+    Tensor t2 = Tensor::ones({2, 2}, DType::INT32, cpu_device);
+    EXPECT_THROW(t1 - t2, std::runtime_error);
+}
+
+TEST_F(TensorTest, DTypeMismatchMulThrows) {
+    Tensor t1 = Tensor::ones({2, 2}, DType::FLOAT64, cpu_device);
+    Tensor t2 = Tensor::ones({2, 2}, DType::FLOAT32, cpu_device);
+    EXPECT_THROW(t1 * t2, std::runtime_error);
+}
+
+TEST_F(TensorTest, DTypeMismatchDivThrows) {
+    Tensor t1 = Tensor::ones({2, 2}, DType::FLOAT32, cpu_device);
+    Tensor t2 = Tensor::ones({2, 2}, DType::INT32, cpu_device);
+    EXPECT_THROW(t1 / t2, std::runtime_error);
+}
+
+TEST_F(TensorTest, ItemOnNonScalarThrows) {
+    Tensor t = Tensor::ones({2, 2}, DType::FLOAT32, cpu_device);
+    EXPECT_THROW((void)t.item(), std::runtime_error);
+}
+
+TEST_F(TensorTest, ItemOnMultiElementTensorThrows) {
+    Tensor t = Tensor::ones({5}, DType::FLOAT32, cpu_device);
+    EXPECT_THROW((void)t.item(), std::runtime_error);
+}
+
+TEST_F(TensorTest, InvalidTransposeDimensionsThrow) {
+    Tensor t = Tensor::ones({2, 3, 4}, DType::FLOAT32, cpu_device);
+    // Dimension 5 doesn't exist (only have 0, 1, 2)
+    EXPECT_THROW(t.transpose(0, 5), std::runtime_error);
+}
+
+TEST_F(TensorTest, InvalidPermuteLengthThrows) {
+    Tensor t = Tensor::ones({2, 3, 4}, DType::FLOAT32, cpu_device);
+    // Permute dimensions size must match tensor dimensions
+    EXPECT_THROW(t.permute({0, 1}), std::runtime_error);
+}
+
+TEST_F(TensorTest, InvalidSqueezeDimensionThrows) {
+    Tensor t = Tensor::ones({2, 3}, DType::FLOAT32, cpu_device);
+    // Can't squeeze dimension 0 with size 2 (not size 1)
+    EXPECT_THROW(t.squeeze(0), std::runtime_error);
+}
+
+TEST_F(TensorTest, OutOfBoundsUnsqueezeThrows) {
+    Tensor t = Tensor::ones({2, 3}, DType::FLOAT32, cpu_device);
+    // Valid range is [-3, 3] for unsqueeze (adding new dimension)
+    EXPECT_THROW(t.unsqueeze(10), std::runtime_error);
+}
+
+// ============================================================================
+// Edge Case Tests
+// ============================================================================
+
+TEST_F(TensorTest, NegateOperator) {
+    Tensor t = Tensor::ones({2, 2}, DType::FLOAT32, cpu_device) * 5.0;
+    Tensor neg = t * -1.0;  // Negate using scalar multiplication
+
+    auto acc = neg.accessor<float, 2>();
+    EXPECT_FLOAT_EQ(acc[0][0], -5.0f);
+    EXPECT_FLOAT_EQ(acc[1][1], -5.0f);
+}
+
+TEST_F(TensorTest, ToDeviceSameDevice) {
+    Tensor t = Tensor::ones({2, 2}, DType::FLOAT32, cpu_device);
+    Tensor t2 = t.toDevice(cpu_device);
+
+    // Should return shallow copy (same storage)
+    EXPECT_EQ(t.shape(), t2.shape());
+    EXPECT_EQ(t.dtype(), t2.dtype());
+}
+
+TEST_F(TensorTest, DotProductScalarResult) {
+    Tensor a = Tensor::ones({5}, DType::FLOAT32, cpu_device);
+    Tensor b = Tensor::ones({5}, DType::FLOAT32, cpu_device) * 2.0;
+
+    Tensor result = a.dot(b);
+    EXPECT_FLOAT_EQ(result.item(), 10.0f);  // 5 * (1.0 * 2.0)
+}
+
+TEST_F(TensorTest, MaxMinOnNegativeValues) {
+    Tensor t = Tensor::zeros({5}, DType::FLOAT32, cpu_device);
+    auto acc = t.accessor<float, 1>();
+    acc[0] = -5.0f;
+    acc[1] = -2.0f;
+    acc[2] = -8.0f;
+    acc[3] = -1.0f;
+    acc[4] = -10.0f;
+
+    Tensor max_val = t.max();
+    Tensor min_val = t.min();
+
+    EXPECT_FLOAT_EQ(max_val.item(), -1.0f);
+    EXPECT_FLOAT_EQ(min_val.item(), -10.0f);
+}
+
+TEST_F(TensorTest, PermuteAllDimensions) {
+    Tensor t = Tensor::ones({2, 3, 4}, DType::FLOAT32, cpu_device);
+
+    Tensor p = t.permute({2, 0, 1});  // Permute to [4, 2, 3]
+
+    EXPECT_EQ(p.shape()[0], 4);
+    EXPECT_EQ(p.shape()[1], 2);
+    EXPECT_EQ(p.shape()[2], 3);
+}
+
+TEST_F(TensorTest, PermuteReverseOrder) {
+    Tensor t = Tensor::ones({2, 3, 4}, DType::FLOAT32, cpu_device);
+
+    Tensor p = t.permute({2, 1, 0});  // Reverse all dimensions
+
+    EXPECT_EQ(p.shape()[0], 4);
+    EXPECT_EQ(p.shape()[1], 3);
+    EXPECT_EQ(p.shape()[2], 2);
+}
+
+// ============================================================================
+// Different DType Tests
+// ============================================================================
+
+TEST_F(TensorTest, OperationsWithInt32Add) {
+    Tensor t1 = Tensor::ones({2, 2}, DType::INT32, cpu_device);
+    Tensor t2 = Tensor::ones({2, 2}, DType::INT32, cpu_device) * 2.0;
+
+    Tensor result = t1 + t2;
+
+    auto acc = result.accessor<int32_t, 2>();
+    EXPECT_EQ(acc[0][0], 3);
+    EXPECT_EQ(acc[1][1], 3);
+}
+
+TEST_F(TensorTest, OperationsWithInt32Mul) {
+    Tensor t1 = Tensor::ones({2, 2}, DType::INT32, cpu_device) * 3.0;
+    Tensor t2 = Tensor::ones({2, 2}, DType::INT32, cpu_device) * 4.0;
+
+    Tensor result = t1 * t2;
+
+    auto acc = result.accessor<int32_t, 2>();
+    EXPECT_EQ(acc[0][0], 12);
+}
+
+TEST_F(TensorTest, OperationsWithFloat64Add) {
+    Tensor t1 = Tensor::ones({2, 2}, DType::FLOAT64, cpu_device);
+    Tensor t2 = Tensor::ones({2, 2}, DType::FLOAT64, cpu_device) * 2.5;
+
+    Tensor result = t1 + t2;
+
+    auto acc = result.accessor<double, 2>();
+    EXPECT_DOUBLE_EQ(acc[0][0], 3.5);
+}
+
+TEST_F(TensorTest, OperationsWithFloat64Mul) {
+    Tensor t1 = Tensor::ones({2, 2}, DType::FLOAT64, cpu_device) * 1.5;
+    Tensor t2 = Tensor::ones({2, 2}, DType::FLOAT64, cpu_device) * 2.0;
+
+    Tensor result = t1 * t2;
+
+    auto acc = result.accessor<double, 2>();
+    EXPECT_DOUBLE_EQ(acc[0][0], 3.0);
+}
+
+TEST_F(TensorTest, Int64Operations) {
+    Tensor t1 = Tensor::zeros({2, 2}, DType::INT64, cpu_device);
+    Tensor t2 = Tensor::zeros({2, 2}, DType::INT64, cpu_device);
+
+    auto acc1 = t1.accessor<int64_t, 2>();
+    auto acc2 = t2.accessor<int64_t, 2>();
+
+    acc1[0][0] = 1000000000000LL;
+    acc2[0][0] = 2000000000000LL;
+
+    Tensor result = t1 + t2;
+    auto res_acc = result.accessor<int64_t, 2>();
+
+    EXPECT_EQ(res_acc[0][0], 3000000000000LL);
+}
+
+TEST_F(TensorTest, ScalarOperationsWithInt32) {
+    Tensor t = Tensor::ones({2, 2}, DType::INT32, cpu_device) * 5.0;
+    Tensor result = t + 3.0;
+
+    auto acc = result.accessor<int32_t, 2>();
+    EXPECT_EQ(acc[0][0], 8);
+}
+
+TEST_F(TensorTest, ScalarOperationsWithFloat64) {
+    Tensor t = Tensor::ones({2, 2}, DType::FLOAT64, cpu_device) * 2.5;
+    Tensor result = t * 2.0;
+
+    auto acc = result.accessor<double, 2>();
+    EXPECT_DOUBLE_EQ(acc[0][0], 5.0);
+}
+
+// ============================================================================
+// Accessor Edge Cases
+// ============================================================================
+
+TEST_F(TensorTest, AccessorDimensionMismatchThrows) {
+    Tensor t = Tensor::ones({2, 3, 4}, DType::FLOAT32, cpu_device);
+
+    // Trying to get 2D accessor on 3D tensor should throw
+    EXPECT_THROW((t.accessor<float, 2>()), std::runtime_error);
+}
+
+TEST_F(TensorTest, AccessorTypeMismatchThrows) {
+    Tensor t = Tensor::ones({2, 2}, DType::FLOAT32, cpu_device);
+
+    // Trying to get double accessor on FLOAT32 tensor should throw
+    EXPECT_THROW((t.accessor<double, 2>()), std::runtime_error);
+}
+
+// ============================================================================
+// Slice Edge Cases
+// ============================================================================
+
+TEST_F(TensorTest, SliceFullRange) {
+    Tensor t = Tensor::ones({5, 3}, DType::FLOAT32, cpu_device);
+
+    // Slice entire range should give same shape
+    Tensor sliced = t.slice(0, 0, 5);
+
+    EXPECT_EQ(sliced.shape()[0], 5);
+    EXPECT_EQ(sliced.shape()[1], 3);
+}
+
+TEST_F(TensorTest, SliceSingleElement) {
+    Tensor t = Tensor::ones({5, 3}, DType::FLOAT32, cpu_device);
+
+    // Slice single element
+    Tensor sliced = t.slice(0, 2, 3);
+
+    EXPECT_EQ(sliced.shape()[0], 1);
+    EXPECT_EQ(sliced.shape()[1], 3);
+}
+
+TEST_F(TensorTest, CloneCreatesIndependentCopy) {
+    Tensor t1 = Tensor::ones({2, 2}, DType::FLOAT32, cpu_device);
+    Tensor t2 = t1.clone();
+
+    // Modify t1
+    auto acc1 = t1.accessor<float, 2>();
+    acc1[0][0] = 99.0f;
+
+    // t2 should be unchanged
+    auto acc2 = t2.accessor<float, 2>();
+    EXPECT_FLOAT_EQ(acc2[0][0], 1.0f);
+}
+
+TEST_F(TensorTest, ContiguousOnContiguousTensor) {
+    Tensor t = Tensor::ones({2, 3}, DType::FLOAT32, cpu_device);
+
+    EXPECT_TRUE(t.isContiguous());
+
+    Tensor t2 = t.contiguous();
+    EXPECT_TRUE(t2.isContiguous());
+}
+
+TEST_F(TensorTest, ContiguousOnTransposedTensor) {
+    Tensor t = Tensor::ones({2, 3}, DType::FLOAT32, cpu_device);
+    Tensor t_transposed = t.transpose();
+
+    // Transposed tensor is not contiguous
+    EXPECT_FALSE(t_transposed.isContiguous());
+
+    // Make it contiguous
+    Tensor t_cont = t_transposed.contiguous();
+    EXPECT_TRUE(t_cont.isContiguous());
+    EXPECT_EQ(t_cont.shape()[0], 3);
+    EXPECT_EQ(t_cont.shape()[1], 2);
+}
+
+// ============================================================================
+// Reduction Edge Cases
+// ============================================================================
+
+TEST_F(TensorTest, SumAlongDimension) {
+    Tensor t = Tensor::zeros({3, 4}, DType::FLOAT32, cpu_device);
+    auto acc = t.accessor<float, 2>();
+
+    // Fill with known values
+    for (size_t i = 0; i < 3; ++i) {
+        for (size_t j = 0; j < 4; ++j) {
+            acc[i][j] = static_cast<float>(i * 4 + j + 1);
+        }
+    }
+    // t = [[1, 2, 3, 4], [5, 6, 7, 8], [9, 10, 11, 12]]
+
+    // Sum along dimension 0 (collapse rows)
+    Tensor sum0 = t.sum(0, false);
+    EXPECT_EQ(sum0.shape()[0], 4);
+    auto sum0_acc = sum0.accessor<float, 1>();
+    EXPECT_FLOAT_EQ(sum0_acc[0], 15.0f);  // 1+5+9
+    EXPECT_FLOAT_EQ(sum0_acc[1], 18.0f);  // 2+6+10
+}
+
+TEST_F(TensorTest, MeanAlongDimension) {
+    Tensor t = Tensor::full({3, 4}, 6.0, DType::FLOAT32, cpu_device);
+
+    // Mean along dimension 0
+    Tensor mean0 = t.mean(0, false);
+    EXPECT_EQ(mean0.shape()[0], 4);
+
+    auto acc = mean0.accessor<float, 1>();
+    EXPECT_FLOAT_EQ(acc[0], 6.0f);
+    EXPECT_FLOAT_EQ(acc[3], 6.0f);
+}
+
+TEST_F(TensorTest, SumWithKeepdim) {
+    Tensor t = Tensor::ones({2, 3, 4}, DType::FLOAT32, cpu_device);
+
+    // Sum along dimension 1, keeping dimension
+    Tensor sum_keepdim = t.sum(1, true);
+
+    EXPECT_EQ(sum_keepdim.shape()[0], 2);
+    EXPECT_EQ(sum_keepdim.shape()[1], 1);  // Kept as size 1
+    EXPECT_EQ(sum_keepdim.shape()[2], 4);
+}
+
+TEST_F(TensorTest, MeanWithKeepdim) {
+    Tensor t = Tensor::full({2, 3, 4}, 5.0, DType::FLOAT32, cpu_device);
+
+    // Mean along dimension 2, keeping dimension
+    Tensor mean_keepdim = t.mean(2, true);
+
+    EXPECT_EQ(mean_keepdim.shape()[0], 2);
+    EXPECT_EQ(mean_keepdim.shape()[1], 3);
+    EXPECT_EQ(mean_keepdim.shape()[2], 1);  // Kept as size 1
+}
+
+// ============================================================================
+// Broadcasting Edge Cases
+// ============================================================================
+
+TEST_F(TensorTest, BroadcastScalarToTensor) {
+    Tensor t = Tensor::ones({3, 3}, DType::FLOAT32, cpu_device);
+    Tensor result = t + 5.0;
+
+    auto acc = result.accessor<float, 2>();
+    EXPECT_FLOAT_EQ(acc[0][0], 6.0f);
+    EXPECT_FLOAT_EQ(acc[2][2], 6.0f);
+}
+
+TEST_F(TensorTest, BroadcastRowVector) {
+    Tensor t = Tensor::ones({3, 4}, DType::FLOAT32, cpu_device);
+    Tensor row = Tensor::ones({1, 4}, DType::FLOAT32, cpu_device) * 2.0;
+
+    Tensor result = t + row;
+
+    EXPECT_EQ(result.shape()[0], 3);
+    EXPECT_EQ(result.shape()[1], 4);
+
+    auto acc = result.accessor<float, 2>();
+    EXPECT_FLOAT_EQ(acc[0][0], 3.0f);
+    EXPECT_FLOAT_EQ(acc[2][3], 3.0f);
+}
+
+TEST_F(TensorTest, BroadcastColumnVector) {
+    Tensor t = Tensor::ones({3, 4}, DType::FLOAT32, cpu_device);
+    Tensor col = Tensor::ones({3, 1}, DType::FLOAT32, cpu_device) * 5.0;
+
+    Tensor result = t * col;
+
+    EXPECT_EQ(result.shape()[0], 3);
+    EXPECT_EQ(result.shape()[1], 4);
+
+    auto acc = result.accessor<float, 2>();
+    EXPECT_FLOAT_EQ(acc[0][0], 5.0f);
+    EXPECT_FLOAT_EQ(acc[2][3], 5.0f);
+}
+
+// ============================================================================
+// View Operation Edge Cases
+// ============================================================================
+
+TEST_F(TensorTest, FlattenHighDimensionalTensor) {
+    Tensor t = Tensor::ones({2, 3, 4, 5}, DType::FLOAT32, cpu_device);
+
+    Tensor flat = t.flatten();
+
+    EXPECT_EQ(flat.ndim(), 1);
+    EXPECT_EQ(flat.numel(), 120);  // 2*3*4*5
+}
+
+TEST_F(TensorTest, ReshapeToHigherDimensions) {
+    Tensor t = Tensor::ones({24}, DType::FLOAT32, cpu_device);
+
+    Tensor reshaped = t.reshape({2, 3, 4});
+
+    EXPECT_EQ(reshaped.shape()[0], 2);
+    EXPECT_EQ(reshaped.shape()[1], 3);
+    EXPECT_EQ(reshaped.shape()[2], 4);
+}
+
+TEST_F(TensorTest, TransposeHighDimensionalTensor) {
+    Tensor t = Tensor::ones({2, 3, 4}, DType::FLOAT32, cpu_device);
+
+    // Transpose dimensions 0 and 2
+    Tensor transposed = t.transpose(0, 2);
+
+    EXPECT_EQ(transposed.shape()[0], 4);
+    EXPECT_EQ(transposed.shape()[1], 3);
+    EXPECT_EQ(transposed.shape()[2], 2);
+}
+
+TEST_F(TensorTest, UnsqueezeMultipleDimensions) {
+    Tensor t = Tensor::ones({3, 4}, DType::FLOAT32, cpu_device);
+
+    Tensor u1 = t.unsqueeze(0);  // [1, 3, 4]
+    EXPECT_EQ(u1.ndim(), 3);
+    EXPECT_EQ(u1.shape()[0], 1);
+
+    Tensor u2 = u1.unsqueeze(3);  // [1, 3, 4, 1]
+    EXPECT_EQ(u2.ndim(), 4);
+    EXPECT_EQ(u2.shape()[3], 1);
+}
+
+TEST_F(TensorTest, SqueezeAllSingletonDimensions) {
+    Tensor t = Tensor::ones({1, 3, 1, 4, 1}, DType::FLOAT32, cpu_device);
+
+    Tensor squeezed = t.squeeze();
+
+    // Should remove all dimensions of size 1
+    EXPECT_EQ(squeezed.ndim(), 2);
+    EXPECT_EQ(squeezed.shape()[0], 3);
+    EXPECT_EQ(squeezed.shape()[1], 4);
+}
+
+// ============================================================================
+// In-Place Operation Tests
+// ============================================================================
+
+TEST_F(TensorTest, InPlaceAddScalar) {
+    Tensor t = Tensor::ones({2, 2}, DType::FLOAT32, cpu_device);
+    t += 5.0;
+
+    auto acc = t.accessor<float, 2>();
+    EXPECT_FLOAT_EQ(acc[0][0], 6.0f);
+}
+
+TEST_F(TensorTest, InPlaceSubScalar) {
+    Tensor t = Tensor::ones({2, 2}, DType::FLOAT32, cpu_device) * 10.0;
+    t -= 3.0;
+
+    auto acc = t.accessor<float, 2>();
+    EXPECT_FLOAT_EQ(acc[0][0], 7.0f);
+}
+
+TEST_F(TensorTest, InPlaceMulScalar) {
+    Tensor t = Tensor::ones({2, 2}, DType::FLOAT32, cpu_device) * 2.0;
+    t *= 3.0;
+
+    auto acc = t.accessor<float, 2>();
+    EXPECT_FLOAT_EQ(acc[0][0], 6.0f);
+}
+
+TEST_F(TensorTest, InPlaceDivScalar) {
+    Tensor t = Tensor::ones({2, 2}, DType::FLOAT32, cpu_device) * 12.0;
+    t /= 4.0;
+
+    auto acc = t.accessor<float, 2>();
+    EXPECT_FLOAT_EQ(acc[0][0], 3.0f);
+}
+
+TEST_F(TensorTest, InPlaceAddTensor) {
+    Tensor t1 = Tensor::ones({2, 2}, DType::FLOAT32, cpu_device);
+    Tensor t2 = Tensor::ones({2, 2}, DType::FLOAT32, cpu_device) * 5.0;
+
+    t1 += t2;
+
+    auto acc = t1.accessor<float, 2>();
+    EXPECT_FLOAT_EQ(acc[0][0], 6.0f);
+}
+
+// ============================================================================
+// Property-Based Invariant Tests
+// ============================================================================
+
+TEST_F(TensorTest, InPlaceEquivalentToOutOfPlace) {
+    // Property: a += b should produce same result as a = a + b
+    Tensor a1 = Tensor::randn({2, 3}, DType::FLOAT32, cpu_device);
+    Tensor a2 = a1.clone();
+    Tensor b = Tensor::randn({2, 3}, DType::FLOAT32, cpu_device);
+
+    // In-place
+    a1 += b;
+
+    // Out-of-place
+    a2 = a2 + b;
+
+    // Compare results
+    auto acc1 = a1.accessor<float, 2>();
+    auto acc2 = a2.accessor<float, 2>();
+    for (size_t i = 0; i < 2; ++i) {
+        for (size_t j = 0; j < 3; ++j) {
+            EXPECT_FLOAT_EQ(acc1[i][j], acc2[i][j]);
+        }
+    }
+}
+
+TEST_F(TensorTest, InPlaceEquivalentWithNonContiguous) {
+    // Property: in-place op should work same way with contiguous and non-contiguous tensors
+    Tensor a = Tensor::randn({2, 3}, DType::FLOAT32, cpu_device);
+    Tensor b_cont = Tensor::randn({2, 3}, DType::FLOAT32, cpu_device);
+    Tensor b_noncont = Tensor::randn({3, 2}, DType::FLOAT32, cpu_device).transpose();
+
+    EXPECT_TRUE(b_cont.isContiguous());
+    EXPECT_FALSE(b_noncont.isContiguous());
+
+    // Both should produce same values (2 + 3 = 5 in both cases)
+    b_cont.fill(3.0);
+    auto b_noncont_acc = b_noncont.accessor<float, 2>();
+    for (size_t i = 0; i < 2; ++i) {
+        for (size_t j = 0; j < 3; ++j) {
+            b_noncont_acc[i][j] = 3.0f;
+        }
+    }
+
+    Tensor a1 = a.clone();
+    Tensor a2 = a.clone();
+
+    a1 += b_cont;
+    a2 += b_noncont;
+
+    // Results should be identical
+    auto acc1 = a1.accessor<float, 2>();
+    auto acc2 = a2.accessor<float, 2>();
+    for (size_t i = 0; i < 2; ++i) {
+        for (size_t j = 0; j < 3; ++j) {
+            EXPECT_NEAR(acc1[i][j], acc2[i][j], 1e-6f);
+        }
+    }
+}
+
+TEST_F(TensorTest, ArithmeticCommutativity) {
+    // Property: a + b == b + a (regardless of contiguity)
+    Tensor a = Tensor::ones({2, 3}, DType::FLOAT32, cpu_device) * 2.0;
+    Tensor b_base = Tensor::ones({3, 2}, DType::FLOAT32, cpu_device) * 3.0;
+    Tensor b = b_base.transpose();  // Non-contiguous
+
+    EXPECT_FALSE(b.isContiguous());
+    EXPECT_EQ(a.shape(), b.shape());
+
+    Tensor r1 = a + b;
+    Tensor r2 = b + a;
+
+    // Results should be equal (both should be 5.0)
+    auto acc1 = r1.accessor<float, 2>();
+    auto acc2 = r2.accessor<float, 2>();
+    for (size_t i = 0; i < 2; ++i) {
+        for (size_t j = 0; j < 3; ++j) {
+            EXPECT_FLOAT_EQ(acc1[i][j], acc2[i][j]);
+            EXPECT_FLOAT_EQ(acc1[i][j], 5.0f);  // 2 + 3 = 5
+        }
+    }
+}
+
+TEST_F(TensorTest, ArithmeticAssociativity) {
+    // Property: (a + b) + c == a + (b + c)
+    Tensor a = Tensor::ones({2, 2}, DType::FLOAT32, cpu_device) * 1.0;
+    Tensor b = Tensor::ones({2, 2}, DType::FLOAT32, cpu_device) * 2.0;
+    Tensor c = Tensor::ones({2, 2}, DType::FLOAT32, cpu_device) * 3.0;
+
+    Tensor r1 = (a + b) + c;
+    Tensor r2 = a + (b + c);
+
+    auto acc1 = r1.accessor<float, 2>();
+    auto acc2 = r2.accessor<float, 2>();
+    for (size_t i = 0; i < 2; ++i) {
+        for (size_t j = 0; j < 2; ++j) {
+            EXPECT_FLOAT_EQ(acc1[i][j], acc2[i][j]);
+        }
+    }
+}
+
+TEST_F(TensorTest, ArithmeticDistributivity) {
+    // Property: a * (b + c) == a * b + a * c
+    Tensor a = Tensor::ones({2, 2}, DType::FLOAT32, cpu_device) * 2.0;
+    Tensor b = Tensor::ones({2, 2}, DType::FLOAT32, cpu_device) * 3.0;
+    Tensor c = Tensor::ones({2, 2}, DType::FLOAT32, cpu_device) * 5.0;
+
+    Tensor r1 = a * (b + c);
+    Tensor r2 = a * b + a * c;
+
+    auto acc1 = r1.accessor<float, 2>();
+    auto acc2 = r2.accessor<float, 2>();
+    for (size_t i = 0; i < 2; ++i) {
+        for (size_t j = 0; j < 2; ++j) {
+            EXPECT_NEAR(acc1[i][j], acc2[i][j], 1e-5f);
+        }
+    }
+}
+
+TEST_F(TensorTest, ViewOperationsPreserveValues) {
+    // Property: View operations should not change underlying values
+    Tensor a = Tensor::randn({2, 3, 4}, DType::FLOAT32, cpu_device);
+
+    // Get original values
+    auto orig_flat = a.contiguous().flatten();
+    auto orig_acc = orig_flat.accessor<float, 1>();
+
+    // Apply view operations
+    Tensor viewed = a.transpose().transpose();  // Should get back to same view
+
+    // Values should match
+    EXPECT_EQ(a.numel(), viewed.numel());
+
+    // Note: Direct comparison may be tricky with strides, so compare via contiguous()
+    auto viewed_flat = viewed.contiguous().flatten();
+    auto viewed_acc = viewed_flat.accessor<float, 1>();
+
+    for (size_t i = 0; i < orig_flat.numel(); ++i) {
+        EXPECT_FLOAT_EQ(orig_acc[i], viewed_acc[i]);
+    }
+}
+
+TEST_F(TensorTest, ContiguousPreservesValues) {
+    // Property: Making a tensor contiguous should not change its values
+    Tensor a = Tensor::randn({2, 3}, DType::FLOAT32, cpu_device);
+    Tensor a_t = a.transpose();
+
+    EXPECT_FALSE(a_t.isContiguous());
+
+    // Get values before making contiguous
+    auto acc_before = a_t.accessor<float, 2>();
+    std::vector<float> values_before;
+    for (size_t i = 0; i < a_t.shape()[0]; ++i) {
+        for (size_t j = 0; j < a_t.shape()[1]; ++j) {
+            values_before.push_back(acc_before[i][j]);
+        }
+    }
+
+    // Make contiguous
+    Tensor a_cont = a_t.contiguous();
+    EXPECT_TRUE(a_cont.isContiguous());
+
+    // Values should be unchanged
+    auto acc_after = a_cont.accessor<float, 2>();
+    size_t idx = 0;
+    for (size_t i = 0; i < a_cont.shape()[0]; ++i) {
+        for (size_t j = 0; j < a_cont.shape()[1]; ++j) {
+            EXPECT_FLOAT_EQ(values_before[idx], acc_after[i][j]);
+            idx++;
+        }
+    }
+}
+
+TEST_F(TensorTest, CloneCreatesIndependentValues) {
+    // Property: Modifying a clone should not affect the original
+    Tensor a = Tensor::ones({2, 2}, DType::FLOAT32, cpu_device) * 5.0;
+    Tensor b = a.clone();
+
+    // Modify clone
+    b += 10.0;
+
+    // Original should be unchanged
+    auto acc_a = a.accessor<float, 2>();
+    auto acc_b = b.accessor<float, 2>();
+
+    EXPECT_FLOAT_EQ(acc_a[0][0], 5.0f);
+    EXPECT_FLOAT_EQ(acc_b[0][0], 15.0f);
+}
+
+// ============================================================================
+// Random Number Generation Tests
+// ============================================================================
+
+TEST_F(TensorTest, RandValuesInRange) {
+    Tensor t = Tensor::rand({100}, DType::FLOAT32, cpu_device);
+
+    auto acc = t.accessor<float, 1>();
+    for (size_t i = 0; i < 100; ++i) {
+        EXPECT_GE(acc[i], 0.0f);
+        EXPECT_LE(acc[i], 1.0f);
+    }
+}
+
+TEST_F(TensorTest, RandRespectsManualSeed) {
+    // Test that manualSeed makes rand() reproducible
+    Tensor::manualSeed(42);
+    Tensor t1 = Tensor::rand({3, 3}, DType::FLOAT32, cpu_device);
+
+    Tensor::manualSeed(42);
+    Tensor t2 = Tensor::rand({3, 3}, DType::FLOAT32, cpu_device);
+
+    auto acc1 = t1.accessor<float, 2>();
+    auto acc2 = t2.accessor<float, 2>();
+
+    for (size_t i = 0; i < 3; ++i) {
+        for (size_t j = 0; j < 3; ++j) {
+            EXPECT_FLOAT_EQ(acc1[i][j], acc2[i][j]);
+        }
+    }
+}
+
+TEST_F(TensorTest, RandnApproximateDistribution) {
+    Tensor::manualSeed(123);
+    Tensor t = Tensor::randn({1000}, DType::FLOAT32, cpu_device);
+
+    // Verify approximately normal distribution
+    Tensor mean = t.mean();
+    EXPECT_NEAR(mean.item(), 0.0, 0.2);  // Should be close to 0
+
+    // Most values should be in [-3, 3] for standard normal
+    auto acc = t.accessor<float, 1>();
+    size_t outliers = 0;
+    for (size_t i = 0; i < 1000; ++i) {
+        if (acc[i] < -3.0f || acc[i] > 3.0f) {
+            outliers++;
+        }
+    }
+    EXPECT_LT(outliers, 30);  // Less than 3% outliers (99.7% rule)
+}
+
+TEST_F(TensorTest, UniformDistributionRange) {
+    Tensor t = Tensor::zeros({100}, DType::FLOAT32, cpu_device);
+    t.uniform(5.0, 10.0);
+
+    auto acc = t.accessor<float, 1>();
+    for (size_t i = 0; i < 100; ++i) {
+        EXPECT_GE(acc[i], 5.0f);
+        EXPECT_LE(acc[i], 10.0f);
+    }
+}
+
+// ============================================================================
+// Special Value Tests
+// ============================================================================
+
+TEST_F(TensorTest, ZeroInitialization) {
+    Tensor t = Tensor::zeros({3, 3}, DType::FLOAT32, cpu_device);
+
+    auto acc = t.accessor<float, 2>();
+    for (size_t i = 0; i < 3; ++i) {
+        for (size_t j = 0; j < 3; ++j) {
+            EXPECT_FLOAT_EQ(acc[i][j], 0.0f);
+        }
+    }
+}
+
+TEST_F(TensorTest, OneInitialization) {
+    Tensor t = Tensor::ones({3, 3}, DType::FLOAT32, cpu_device);
+
+    auto acc = t.accessor<float, 2>();
+    for (size_t i = 0; i < 3; ++i) {
+        for (size_t j = 0; j < 3; ++j) {
+            EXPECT_FLOAT_EQ(acc[i][j], 1.0f);
+        }
+    }
+}
+
+TEST_F(TensorTest, FullWithCustomValue) {
+    Tensor t = Tensor::full({2, 3}, 7.5, DType::FLOAT32, cpu_device);
+
+    auto acc = t.accessor<float, 2>();
+    for (size_t i = 0; i < 2; ++i) {
+        for (size_t j = 0; j < 3; ++j) {
+            EXPECT_FLOAT_EQ(acc[i][j], 7.5f);
+        }
+    }
+}
+
+TEST_F(TensorTest, FillInPlace) {
+    Tensor t = Tensor::zeros({2, 2}, DType::FLOAT32, cpu_device);
+    t.fill(3.14);
+
+    auto acc = t.accessor<float, 2>();
+    EXPECT_FLOAT_EQ(acc[0][0], 3.14f);
+    EXPECT_FLOAT_EQ(acc[1][1], 3.14f);
+}
+
+TEST_F(TensorTest, ZeroInPlace) {
+    Tensor t = Tensor::ones({2, 2}, DType::FLOAT32, cpu_device) * 99.0;
+    t.zero();
+
+    auto acc = t.accessor<float, 2>();
+    EXPECT_FLOAT_EQ(acc[0][0], 0.0f);
+    EXPECT_FLOAT_EQ(acc[1][1], 0.0f);
+}
+
+TEST_F(TensorTest, OneInPlace) {
+    Tensor t = Tensor::zeros({2, 2}, DType::FLOAT32, cpu_device);
+    t.one();
+
+    auto acc = t.accessor<float, 2>();
+    EXPECT_FLOAT_EQ(acc[0][0], 1.0f);
+    EXPECT_FLOAT_EQ(acc[1][1], 1.0f);
+}
+
+// ============================================================================
+// Complex Operation Chains
+// ============================================================================
+
+TEST_F(TensorTest, ComplexChainedViewOperations) {
+    Tensor t = Tensor::ones({2, 3, 4}, DType::FLOAT32, cpu_device);
+
+    // Complex chain: flatten -> unsqueeze -> transpose -> reshape
+    Tensor result = t.flatten()            // [24]
+                        .unsqueeze(0)      // [1, 24]
+                        .transpose()       // [24, 1]
+                        .reshape({6, 4});  // [6, 4]
+
+    EXPECT_EQ(result.shape()[0], 6);
+    EXPECT_EQ(result.shape()[1], 4);
+    EXPECT_EQ(result.numel(), 24);
+}
+
+TEST_F(TensorTest, ChainedArithmeticOperations) {
+    Tensor t = Tensor::ones({2, 2}, DType::FLOAT32, cpu_device);
+
+    // Complex chain: ((t + 2) * 3) / 2 - 1 = ((1+2)*3)/2 - 1 = 9/2 - 1 = 3.5
+    Tensor result = ((t + 2.0) * 3.0) / 2.0 - 1.0;
+
+    auto acc = result.accessor<float, 2>();
+    EXPECT_FLOAT_EQ(acc[0][0], 3.5f);
+}
+
+TEST_F(TensorTest, ReductionAfterArithmetic) {
+    Tensor t = Tensor::ones({3, 4}, DType::FLOAT32, cpu_device) * 2.0;
+
+    // (t * 3).sum() = 2*3 * 12 elements = 72
+    Tensor result = (t * 3.0).sum();
+
+    EXPECT_FLOAT_EQ(result.item(), 72.0f);
+}
+
+// ============================================================================
+// Negative Dimension Indexing
+// ============================================================================
+
+TEST_F(TensorTest, NegativeDimensionSum) {
+    Tensor t = Tensor::ones({2, 3, 4}, DType::FLOAT32, cpu_device);
+
+    // -1 means last dimension (dimension 2)
+    Tensor sum_last = t.sum(-1, false);
+
+    EXPECT_EQ(sum_last.shape()[0], 2);
+    EXPECT_EQ(sum_last.shape()[1], 3);
+}
+
+TEST_F(TensorTest, NegativeDimensionUnsqueeze) {
+    Tensor t = Tensor::ones({3, 4}, DType::FLOAT32, cpu_device);
+
+    // -1 means last position (append dimension)
+    Tensor unsqueezed = t.unsqueeze(-1);
+
+    EXPECT_EQ(unsqueezed.shape()[0], 3);
+    EXPECT_EQ(unsqueezed.shape()[1], 4);
+    EXPECT_EQ(unsqueezed.shape()[2], 1);
+}
+
+TEST_F(TensorTest, NegativeDimensionSqueeze) {
+    Tensor t = Tensor::ones({3, 4, 1}, DType::FLOAT32, cpu_device);
+
+    // -1 means last dimension
+    Tensor squeezed = t.squeeze(-1);
+
+    EXPECT_EQ(squeezed.ndim(), 2);
+    EXPECT_EQ(squeezed.shape()[0], 3);
+    EXPECT_EQ(squeezed.shape()[1], 4);
 }

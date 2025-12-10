@@ -108,6 +108,9 @@ if(ENABLE_COVERAGE)
                 --directory .
                 --capture
                 --output-file ${CMAKE_BINARY_DIR}/coverage/coverage.info
+                --ignore-errors inconsistent,negative,count,usage
+                --rc geninfo_unexecuted_blocks=0
+                --rc max_message_count=1000
                 --quiet
 
             # Remove coverage from external dependencies (googletest, etc.)
@@ -121,6 +124,8 @@ if(ENABLE_COVERAGE)
                 '*/tests/*'
                 '*/benchmarks/*'
                 --output-file ${CMAKE_BINARY_DIR}/coverage/coverage_filtered.info
+                --ignore-errors inconsistent,negative,count,usage,unused
+                --rc geninfo_unexecuted_blocks=0
                 --quiet
 
             # Generate HTML report

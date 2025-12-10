@@ -106,5 +106,60 @@ class UnsqueezeBackward : public Node {
     int mDim;
 };
 
+// PermuteBackward: Backward pass for permute operation
+// Forward:  y = x.permute(dims)  - reorders dimensions according to dims
+// Backward: ∂L/∂x = (∂L/∂y).permute(inverse_dims)
+//
+// Key insight: Permute backward uses the inverse permutation.
+// If forward permutation was [2, 0, 1], the inverse is [1, 2, 0]
+//
+// Example: If x.shape = [2, 3, 4] and we do permute([2, 0, 1]):
+//          y.shape = [4, 2, 3]
+//          If ∂L/∂y has shape [4, 2, 3], then ∂L/∂x must have shape [2, 3, 4]
+//          We achieve this by permute(∂L/∂y, [1, 2, 0]) which reverses the reordering
+class PermuteBackward : public Node {
+  public:
+    // Save the forward permutation to compute inverse in backward
+    PermuteBackward(const std::vector<int>& dims);
+
+    std::vector<Tensor> backward(const Tensor& gradOutput) override;
+
+    std::string name() const override { return "PermuteBackward"; }
+    size_t numInputs() const override { return 1; }
+
+  private:
+    std::vector<int> mDims;  // Forward permutation
+};
+
+// SliceBackward: Backward pass for slice operation
+// Forward:  y = x.slice(dim, start, end)  - extracts a range along dimension
+// Backward: ∂L/∂x = zeros with x.shape, then ∂L/∂x[..., start:end, ...] = ∂L/∂y
+//
+// Key insight: Slice backward scatters the gradient to the correct positions.
+// All positions outside the slice get zero gradient.
+//
+// Example: If x.shape = [10, 20] and we do slice(0, 2, 5):
+//          y.shape = [3, 20] (rows 2, 3, 4)
+//          If ∂L/∂y has shape [3, 20], then ∂L/∂x has shape [10, 20] where:
+//          - Rows 0-1: all zeros
+//          - Rows 2-4: values from ∂L/∂y
+//          - Rows 5-9: all zeros
+class SliceBackward : public Node {
+  public:
+    // Save input shape and slice parameters
+    SliceBackward(const std::vector<size_t>& input_shape, int dim, size_t start, size_t end);
+
+    std::vector<Tensor> backward(const Tensor& gradOutput) override;
+
+    std::string name() const override { return "SliceBackward"; }
+    size_t numInputs() const override { return 1; }
+
+  private:
+    std::vector<size_t> mInputShape;  // Original input shape
+    int mDim;                          // Dimension that was sliced
+    size_t mStart;                     // Start index of slice
+    size_t mEnd;                       // End index of slice
+};
+
 }  // namespace autograd
 }  // namespace loom

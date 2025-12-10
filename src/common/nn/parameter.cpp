@@ -37,25 +37,12 @@ Parameter Parameter::ones(const std::vector<size_t>& shape, DType dtype) {
 }
 
 // ============================================================================
-// Factory Methods - Weight Initialization (TODO: Implement these!)
+// Factory Methods - Weight Initialization
 // ============================================================================
 
 Parameter Parameter::kaiming(const std::vector<size_t>& shape, DType dtype) {
-    // TODO(human): Implement Kaiming (He) initialization
-    //
-    // Kaiming initialization is designed for ReLU networks.
+    // Kaiming (He) initialization designed for ReLU networks
     // Formula: weights ~ N(0, std²) where std = sqrt(2 / fan_in)
-    //
-    // Steps:
-    // 1. Validate shape is not empty (throw std::runtime_error if empty)
-    // 2. Compute fan_in = shape[0] (first dimension of weight matrix)
-    // 3. Compute std = sqrt(2.0 / fan_in)
-    // 4. Create random normal tensor: Tensor t = Tensor::randn(shape, dtype)
-    // 5. Scale by std: t = t * std (or t *= std if in-place multiplication works)
-    // 6. Return Parameter(t, true)
-    //
-    // Why shape[0]? For a Linear layer weight matrix [out_features, in_features],
-    // fan_in is the number of inputs, which is the first dimension.
 
     if (shape.empty()) {
         throw std::runtime_error("Shape is empty");
@@ -69,21 +56,8 @@ Parameter Parameter::kaiming(const std::vector<size_t>& shape, DType dtype) {
 }
 
 Parameter Parameter::xavier(const std::vector<size_t>& shape, DType dtype) {
-    // TODO(human): Implement Xavier (Glorot) initialization
-    //
-    // Xavier initialization is designed for tanh/sigmoid networks.
+    // Xavier (Glorot) initialization designed for tanh/sigmoid networks
     // Formula: weights ~ N(0, std²) where std = sqrt(1 / fan_in)
-    //
-    // Steps:
-    // 1. Validate shape is not empty
-    // 2. Compute fan_in = shape[0]
-    // 3. Compute std = sqrt(1.0 / fan_in)
-    // 4. Create random normal tensor: Tensor t = Tensor::randn(shape, dtype)
-    // 5. Scale by std: t = t * std
-    // 6. Return Parameter(t, true)
-    //
-    // The difference from Kaiming is the scaling factor: 1 vs 2 in the numerator.
-    // This accounts for the different activation function properties.
     if (shape.empty()) {
         throw std::runtime_error("Shape is empty");
     }

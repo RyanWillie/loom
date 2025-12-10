@@ -9,8 +9,7 @@ namespace autograd {
 // MatmulBackward: C = A @ B
 // ============================================================================
 
-MatmulBackward::MatmulBackward(const Tensor& a, const Tensor& b)
-    : mSavedA(a), mSavedB(b) {
+MatmulBackward::MatmulBackward(const Tensor& a, const Tensor& b) : mSavedA(a), mSavedB(b) {
     mName = "MatmulBackward";
 }
 
