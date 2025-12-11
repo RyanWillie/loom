@@ -84,16 +84,18 @@ inline void TensorIterator::next() {
     for (int dim = static_cast<int>(mIndices.size()) - 1; dim >= 0; --dim) {
         ++mIndices[dim];
 
-        // If no overflow in this dimension, update offset and we're done
         if (mIndices[dim] < mShape[dim]) {
-            mCurrentOffset += mStride[dim];
-            return;
+            break;  // no carry
         }
 
-        // Overflow: reset this dimension and carry to next
-        // Subtract the offset we accumulated in this dimension
-        mCurrentOffset -= mIndices[dim] * mStride[dim];
+        // carry: reset this dim and continue
         mIndices[dim] = 0;
+    }
+
+    // Recompute offset from indices for correctness across arbitrary strides (including 0-stride).
+    mCurrentOffset = mBaseOffset;
+    for (size_t dim = 0; dim < mIndices.size(); ++dim) {
+        mCurrentOffset += mIndices[dim] * mStride[dim];
     }
 }
 

@@ -65,15 +65,14 @@ Tensor& Tensor::zero() {
         auto* base = static_cast<unsigned char*>(mStorage->data().get());
         std::memset(base + mOffset * sizeOf(dtype()), 0, n * sizeOf(dtype()));
     } else {
-        dispatchByDType(dtype(), mStorage->data().get(), mStorage->size(),
-                        [&](auto* base, size_t) {
-                            using T = std::remove_pointer_t<decltype(base)>;
-                            TensorIterator it(mShape, mStride, mOffset);
-                            while (it.hasNext()) {
-                                base[it.offset()] = static_cast<T>(0);
-                                it.next();
-                            }
-                        });
+        dispatchByDType(dtype(), mStorage->data().get(), mStorage->size(), [&](auto* base, size_t) {
+            using T = std::remove_pointer_t<decltype(base)>;
+            TensorIterator it(mShape, mStride, mOffset);
+            while (it.hasNext()) {
+                base[it.offset()] = static_cast<T>(0);
+                it.next();
+            }
+        });
     }
 
     // Increment version for in-place operation detection
@@ -101,8 +100,11 @@ Tensor& Tensor::one() {
         if (isContiguous()) {
             std::fill_n(base + mOffset, n, static_cast<T>(1));
         } else {
-            forEachOffset(mShape, mStride, mOffset,
-                          [&](size_t off) { base[off] = static_cast<T>(1); });
+            TensorIterator it(mShape, mStride, mOffset);
+            while (it.hasNext()) {
+                base[it.offset()] = static_cast<T>(1);
+                it.next();
+            }
         }
     });
 
@@ -137,8 +139,11 @@ Tensor& Tensor::rand() {
                 ptr[i] = static_cast<T>(dis(gen));
             }
         } else {
-            forEachOffset(mShape, mStride, mOffset,
-                          [&](size_t off) { base[off] = static_cast<T>(dis(gen)); });
+            TensorIterator it(mShape, mStride, mOffset);
+            while (it.hasNext()) {
+                base[it.offset()] = static_cast<T>(dis(gen));
+                it.next();
+            }
         }
     });
 
@@ -173,8 +178,11 @@ Tensor& Tensor::randn() {
                 ptr[i] = static_cast<T>(dis(gen));
             }
         } else {
-            forEachOffset(mShape, mStride, mOffset,
-                          [&](size_t off) { base[off] = static_cast<T>(dis(gen)); });
+            TensorIterator it(mShape, mStride, mOffset);
+            while (it.hasNext()) {
+                base[it.offset()] = static_cast<T>(dis(gen));
+                it.next();
+            }
         }
     });
 
@@ -201,8 +209,11 @@ Tensor& Tensor::uniform(const double min, const double max) {
                 ptr[i] = static_cast<T>(dis(gen));
             }
         } else {
-            forEachOffset(mShape, mStride, mOffset,
-                          [&](size_t off) { base[off] = static_cast<T>(dis(gen)); });
+            TensorIterator it(mShape, mStride, mOffset);
+            while (it.hasNext()) {
+                base[it.offset()] = static_cast<T>(dis(gen));
+                it.next();
+            }
         }
     });
 
@@ -232,7 +243,11 @@ Tensor& Tensor::fill(const double value) {
         if (isContiguous()) {
             std::fill_n(base + mOffset, n, v);
         } else {
-            forEachOffset(mShape, mStride, mOffset, [&](size_t off) { base[off] = v; });
+            TensorIterator it(mShape, mStride, mOffset);
+            while (it.hasNext()) {
+                base[it.offset()] = v;
+                it.next();
+            }
         }
     });
 
@@ -261,8 +276,11 @@ Tensor Tensor::clone() const {
                         }
 
                         size_t di = 0;
-                        forEachOffset(mShape, mStride, mOffset,
-                                      [&](size_t off) { dst_base[di++] = src_base[off]; });
+                        TensorIterator it(mShape, mStride, mOffset);
+                        while (it.hasNext()) {
+                            dst_base[di++] = src_base[it.offset()];
+                            it.next();
+                        }
                     });
     return result;
 }
@@ -494,10 +512,13 @@ Tensor Tensor::operator+(const Tensor& other) const {
                             }
 
                             size_t di = 0;
-                            forEachOffset2(mShape, mStride, mOffset, other.mStride, other.mOffset,
-                                           [&](size_t ao, size_t bo) {
-                                               out_base[di++] = a_base[ao] + b_base[bo];
-                                           });
+                            TensorIterator it_a(mShape, mStride, mOffset);
+                            TensorIterator it_b(other.mShape, other.mStride, other.mOffset);
+                            while (it_a.hasNext()) {
+                                out_base[di++] = a_base[it_a.offset()] + b_base[it_b.offset()];
+                                it_a.next();
+                                it_b.next();
+                            }
                         });
 
         return out;
@@ -556,10 +577,13 @@ Tensor Tensor::operator-(const Tensor& other) const {
                             }
 
                             size_t di = 0;
-                            forEachOffset2(mShape, mStride, mOffset, other.mStride, other.mOffset,
-                                           [&](size_t ao, size_t bo) {
-                                               out_base[di++] = a_base[ao] - b_base[bo];
-                                           });
+                            TensorIterator it_a(mShape, mStride, mOffset);
+                            TensorIterator it_b(mShape, other.mStride, other.mOffset);
+                            while (it_a.hasNext()) {
+                                out_base[di++] = a_base[it_a.offset()] - b_base[it_b.offset()];
+                                it_a.next();
+                                it_b.next();
+                            }
                         });
 
         return out;
@@ -618,10 +642,13 @@ Tensor Tensor::operator*(const Tensor& other) const {
                             }
 
                             size_t di = 0;
-                            forEachOffset2(mShape, mStride, mOffset, other.mStride, other.mOffset,
-                                           [&](size_t ao, size_t bo) {
-                                               out_base[di++] = a_base[ao] * b_base[bo];
-                                           });
+                            TensorIterator it_a(mShape, mStride, mOffset);
+                            TensorIterator it_b(mShape, other.mStride, other.mOffset);
+                            while (it_a.hasNext()) {
+                                out_base[di++] = a_base[it_a.offset()] * b_base[it_b.offset()];
+                                it_a.next();
+                                it_b.next();
+                            }
                         });
 
         return out;
@@ -680,10 +707,13 @@ Tensor Tensor::operator/(const Tensor& other) const {
                             }
 
                             size_t di = 0;
-                            forEachOffset2(mShape, mStride, mOffset, other.mStride, other.mOffset,
-                                           [&](size_t ao, size_t bo) {
-                                               out_base[di++] = a_base[ao] / b_base[bo];
-                                           });
+                            TensorIterator it_a(mShape, mStride, mOffset);
+                            TensorIterator it_b(mShape, other.mStride, other.mOffset);
+                            while (it_a.hasNext()) {
+                                out_base[di++] = a_base[it_a.offset()] / b_base[it_b.offset()];
+                                it_a.next();
+                                it_b.next();
+                            }
                         });
 
         return out;
@@ -741,8 +771,13 @@ Tensor& Tensor::operator+=(const Tensor& other) {
             return;
         }
 
-        forEachOffset2(mShape, mStride, mOffset, rhs.mStride, rhs.mOffset,
-                       [&](size_t off_l, size_t off_r) { base[off_l] += rhs_base[off_r]; });
+        TensorIterator it_l(mShape, mStride, mOffset);
+        TensorIterator it_r(mShape, rhs.mStride, rhs.mOffset);
+        while (it_l.hasNext()) {
+            base[it_l.offset()] += rhs_base[it_r.offset()];
+            it_l.next();
+            it_r.next();
+        }
     });
 
     // Increment version for in-place operation detection
@@ -782,8 +817,13 @@ Tensor& Tensor::operator-=(const Tensor& other) {
             return;
         }
 
-        forEachOffset2(mShape, mStride, mOffset, rhs.mStride, rhs.mOffset,
-                       [&](size_t off_l, size_t off_r) { base[off_l] -= rhs_base[off_r]; });
+        TensorIterator it_l(mShape, mStride, mOffset);
+        TensorIterator it_r(mShape, rhs.mStride, rhs.mOffset);
+        while (it_l.hasNext()) {
+            base[it_l.offset()] -= rhs_base[it_r.offset()];
+            it_l.next();
+            it_r.next();
+        }
     });
 
     // Increment version for in-place operation detection
@@ -822,8 +862,13 @@ Tensor& Tensor::operator*=(const Tensor& other) {
             return;
         }
 
-        forEachOffset2(mShape, mStride, mOffset, rhs.mStride, rhs.mOffset,
-                       [&](size_t off_l, size_t off_r) { base[off_l] *= rhs_base[off_r]; });
+        TensorIterator it_l(mShape, mStride, mOffset);
+        TensorIterator it_r(mShape, rhs.mStride, rhs.mOffset);
+        while (it_l.hasNext()) {
+            base[it_l.offset()] *= rhs_base[it_r.offset()];
+            it_l.next();
+            it_r.next();
+        }
     });
 
     // Increment version for in-place operation detection
@@ -862,8 +907,13 @@ Tensor& Tensor::operator/=(const Tensor& other) {
             return;
         }
 
-        forEachOffset2(mShape, mStride, mOffset, rhs.mStride, rhs.mOffset,
-                       [&](size_t off_l, size_t off_r) { base[off_l] /= rhs_base[off_r]; });
+        TensorIterator it_l(mShape, mStride, mOffset);
+        TensorIterator it_r(mShape, rhs.mStride, rhs.mOffset);
+        while (it_l.hasNext()) {
+            base[it_l.offset()] /= rhs_base[it_r.offset()];
+            it_l.next();
+            it_r.next();
+        }
     });
 
     // Increment version for in-place operation detection
@@ -890,7 +940,11 @@ Tensor& Tensor::operator+=(const double scalar) {
             return;
         }
 
-        forEachOffset(mShape, mStride, mOffset, [&](size_t off) { base[off] += v; });
+        TensorIterator it(mShape, mStride, mOffset);
+        while (it.hasNext()) {
+            base[it.offset()] += v;
+            it.next();
+        }
     });
 
     // Increment version for in-place operation detection
@@ -917,7 +971,11 @@ Tensor& Tensor::operator-=(const double scalar) {
             return;
         }
 
-        forEachOffset(mShape, mStride, mOffset, [&](size_t off) { base[off] -= v; });
+        TensorIterator it(mShape, mStride, mOffset);
+        while (it.hasNext()) {
+            base[it.offset()] -= v;
+            it.next();
+        }
     });
 
     // Increment version for in-place operation detection
@@ -944,7 +1002,11 @@ Tensor& Tensor::operator*=(const double scalar) {
             return;
         }
 
-        forEachOffset(mShape, mStride, mOffset, [&](size_t off) { base[off] *= v; });
+        TensorIterator it(mShape, mStride, mOffset);
+        while (it.hasNext()) {
+            base[it.offset()] *= v;
+            it.next();
+        }
     });
 
     // Increment version for in-place operation detection
@@ -971,7 +1033,11 @@ Tensor& Tensor::operator/=(const double scalar) {
             return;
         }
 
-        forEachOffset(mShape, mStride, mOffset, [&](size_t off) { base[off] /= v; });
+        TensorIterator it(mShape, mStride, mOffset);
+        while (it.hasNext()) {
+            base[it.offset()] /= v;
+            it.next();
+        }
     });
 
     // Increment version for in-place operation detection
@@ -1002,8 +1068,11 @@ Tensor Tensor::operator+(const double scalar) const {
                         }
 
                         size_t di = 0;
-                        forEachOffset(mShape, mStride, mOffset,
-                                      [&](size_t off) { out_base[di++] = src_base[off] + v; });
+                        TensorIterator it(mShape, mStride, mOffset);
+                        while (it.hasNext()) {
+                            out_base[di++] = src_base[it.offset()] + v;
+                            it.next();
+                        }
                     });
 
     if (requiresGrad() && !autograd::NoGradMode::isEnabled()) {
@@ -1045,8 +1114,11 @@ Tensor Tensor::operator-(const double scalar) const {
                         }
 
                         size_t di = 0;
-                        forEachOffset(mShape, mStride, mOffset,
-                                      [&](size_t off) { out_base[di++] = src_base[off] - v; });
+                        TensorIterator it(mShape, mStride, mOffset);
+                        while (it.hasNext()) {
+                            out_base[di++] = src_base[it.offset()] - v;
+                            it.next();
+                        }
                     });
 
     if (requiresGrad() && !autograd::NoGradMode::isEnabled()) {
@@ -1088,8 +1160,11 @@ Tensor Tensor::operator*(const double scalar) const {
                         }
 
                         size_t di = 0;
-                        forEachOffset(mShape, mStride, mOffset,
-                                      [&](size_t off) { out_base[di++] = src_base[off] * v; });
+                        TensorIterator it(mShape, mStride, mOffset);
+                        while (it.hasNext()) {
+                            out_base[di++] = src_base[it.offset()] * v;
+                            it.next();
+                        }
                     });
 
     if (requiresGrad() && !autograd::NoGradMode::isEnabled()) {
@@ -1131,8 +1206,11 @@ Tensor Tensor::operator/(const double scalar) const {
                         }
 
                         size_t di = 0;
-                        forEachOffset(mShape, mStride, mOffset,
-                                      [&](size_t off) { out_base[di++] = src_base[off] / v; });
+                        TensorIterator it(mShape, mStride, mOffset);
+                        while (it.hasNext()) {
+                            out_base[di++] = src_base[it.offset()] / v;
+                            it.next();
+                        }
                     });
 
     if (requiresGrad() && !autograd::NoGradMode::isEnabled()) {
@@ -1482,8 +1560,6 @@ Tensor Tensor::sum() const {
     size_t total_elements = numel();
 
     dispatchByDType(dtype(), mStorage->data().get(), total_elements, [&](auto* ptr, size_t n) {
-        using T = std::remove_pointer_t<decltype(ptr)>;
-
         // Iterate through visible elements using multi-dimensional indexing
         std::vector<size_t> indices(mShape.size(), 0);
         for (size_t i = 0; i < n; ++i) {
@@ -1629,8 +1705,6 @@ Tensor Tensor::mean() const {
     size_t total_elements = numel();
 
     dispatchByDType(dtype(), mStorage->data().get(), total_elements, [&](auto* ptr, size_t n) {
-        using T = std::remove_pointer_t<decltype(ptr)>;
-
         // Iterate through visible elements using multi-dimensional indexing
         std::vector<size_t> indices(mShape.size(), 0);
         for (size_t i = 0; i < n; ++i) {
@@ -2037,8 +2111,6 @@ Tensor Tensor::var() const {
     // First pass: compute mean
     double mean_val = 0.0;
     dispatchByDType(dtype(), mStorage->data().get(), total_elements, [&](auto* ptr, size_t n) {
-        using T = std::remove_pointer_t<decltype(ptr)>;
-
         std::vector<size_t> indices(mShape.size(), 0);
         for (size_t i = 0; i < n; ++i) {
             size_t offset = mOffset;
@@ -2061,8 +2133,6 @@ Tensor Tensor::var() const {
     // Second pass: compute mean of squared deviations
     double var_val = 0.0;
     dispatchByDType(dtype(), mStorage->data().get(), total_elements, [&](auto* ptr, size_t n) {
-        using T = std::remove_pointer_t<decltype(ptr)>;
-
         std::vector<size_t> indices(mShape.size(), 0);
         for (size_t i = 0; i < n; ++i) {
             size_t offset = mOffset;
@@ -2106,8 +2176,6 @@ Tensor Tensor::max() const {
     size_t total_elements = numel();
 
     dispatchByDType(dtype(), mStorage->data().get(), total_elements, [&](auto* ptr, size_t n) {
-        using T = std::remove_pointer_t<decltype(ptr)>;
-
         // Iterate through visible elements using multi-dimensional indexing
         std::vector<size_t> indices(mShape.size(), 0);
         for (size_t i = 0; i < n; ++i) {
@@ -2250,8 +2318,6 @@ Tensor Tensor::min() const {
     size_t total_elements = numel();
 
     dispatchByDType(dtype(), mStorage->data().get(), total_elements, [&](auto* ptr, size_t n) {
-        using T = std::remove_pointer_t<decltype(ptr)>;
-
         // Iterate through visible elements using multi-dimensional indexing
         std::vector<size_t> indices(mShape.size(), 0);
         for (size_t i = 0; i < n; ++i) {

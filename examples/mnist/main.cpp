@@ -94,7 +94,8 @@ int main() {
     auto trainer = std::make_shared<nn::Trainer>(model, optimizer, criterion);
 
     // Train the model
-    const auto& history = trainer->train(train_loader, test_loader, num_epochs, log_interval);
+    [[maybe_unused]] const auto& history =
+        trainer->train(train_loader, test_loader, num_epochs, log_interval);
 
     // ========================================================================
     // Sample Predictions from Test Set

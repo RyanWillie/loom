@@ -27,8 +27,8 @@ void ConsoleMonitor::onEpochStart(size_t epoch, size_t total_epochs) {
     mEpochStart = std::chrono::steady_clock::now();
 }
 
-void ConsoleMonitor::onBatchComplete(size_t batch, size_t total_batches, float loss,
-                                     float accuracy) {
+void ConsoleMonitor::onBatchComplete(size_t batch, size_t total_batches,
+                                     [[maybe_unused]] float loss, [[maybe_unused]] float accuracy) {
     if (!mShowProgress)
         return;
 

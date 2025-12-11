@@ -182,7 +182,7 @@ float Trainer::computeAccuracy(const Tensor& predictions, const Tensor& targets)
 }
 
 std::pair<float, float> Trainer::trainEpoch(DataLoader& train_loader, size_t log_interval) {
-    auto epoch_start = std::chrono::steady_clock::now();
+    [[maybe_unused]] auto epoch_start = std::chrono::steady_clock::now();
 
     float total_loss = 0.0f;
     float total_accuracy = 0.0f;
