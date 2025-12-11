@@ -1,17 +1,10 @@
 # Locate all test files
 file(GLOB_RECURSE TEST_SOURCES "*.cpp")
 
-add_executable(unit_tests ${TEST_SOURCES} ${COMMON_SOURCES} ${CPU_SOURCES})
+add_executable(unit_tests ${TEST_SOURCES})
 
-# Link GoogleTest
-target_link_libraries(unit_tests GTest::gtest_main)
-
-# If CUDA is enabled, we might want to link against CUDA runtime or include GPU sources 
-# if we write GPU specific tests later. For now, we keep it simple.
-if(USE_CUDA)
-    target_sources(unit_tests PRIVATE ${GPU_SOURCES})
-    set_target_properties(unit_tests PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
-endif()
+# Link against loom library and GoogleTest
+target_link_libraries(unit_tests PRIVATE loom GTest::gtest_main)
 
 # Apply clang-tidy only to our test targets, not dependencies
 if(ENABLE_CLANG_TIDY AND CLANG_TIDY_COMMAND)

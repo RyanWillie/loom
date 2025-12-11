@@ -10,11 +10,12 @@ This directory contains Docker configurations for the MNIST Neural Network proje
 **Use Case:** Development, testing, sanitizers, code analysis
 
 **Includes:**
-- ✅ GCC and Clang compilers
+- ✅ GCC 13 and Clang compilers (C++20 support)
 - ✅ CMake and Ninja build system
 - ✅ clang-format and clang-tidy
 - ✅ GDB debugger
 - ✅ Valgrind memory profiler
+- ✅ lcov 2.1 with Perl dependencies for coverage
 - ✅ AddressSanitizer, UBSan, TSan libraries
 - ✅ All development tools
 

@@ -43,7 +43,15 @@ RUN add-apt-repository ppa:ubuntu-toolchain-r/test -y && \
     update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-13 100 && \
     update-alternatives --install /usr/bin/cc cc /usr/bin/gcc-13 100 && \
     update-alternatives --install /usr/bin/c++ c++ /usr/bin/g++-13 100 && \
+    update-alternatives --install /usr/bin/gcov gcov /usr/bin/gcov-13 100 && \
     rm -rf /var/lib/apt/lists/*
+
+# Install Perl dependencies for lcov 2.0+
+RUN apt-get update && apt-get install -y \
+    libcapture-tiny-perl \
+    libdatetime-perl \
+    libtimedate-perl \
+    && rm -rf /var/lib/apt/lists/*
 
 # Install lcov 2.0+ from source (Ubuntu's lcov 1.15 doesn't support GCC 13)
 RUN cd /tmp && \

@@ -1,4 +1,4 @@
-#include "cpu/basic_allocator.h"
+#include "loom/memory/basic_allocator.h"
 
 #include <cstdlib>
 #include <stdexcept>

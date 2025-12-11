@@ -2,11 +2,11 @@
 #include <thread>
 #include <vector>
 
-#include "common/device.h"
-#include "common/logger.h"
-#include "common/memory/allocator.h"
-#include "common/registry/allocator_registry.h"
-#include "cpu/pooling_allocator.h"
+#include "loom/device.h"
+#include "loom/logger.h"
+#include "loom/memory/allocator.h"
+#include "loom/registry/allocator_registry.h"
+#include "loom/memory/pooling_allocator.h"
 #include <gtest/gtest.h>
 
 using namespace loom;

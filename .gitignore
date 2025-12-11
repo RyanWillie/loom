@@ -29,7 +29,7 @@ lib/
 *.exe
 *.out
 *.app
-loom
+/loom
 
 # CMake
 CMakeCache.txt

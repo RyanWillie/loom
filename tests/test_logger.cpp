@@ -2,7 +2,7 @@
 #include <thread>
 #include <vector>
 
-#include "common/logger.h"
+#include "loom/logger.h"
 #include <gtest/gtest.h>
 
 // ============================================================================

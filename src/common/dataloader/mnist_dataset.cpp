@@ -1,10 +1,10 @@
-#include "common/dataloader/mnist_dataset.h"
+#include "loom/dataloader/mnist_dataset.h"
 
 #include <cstdint>
 #include <cstdio>
 #include <fstream>
 
-#include "common/logger.h"
+#include "loom/logger.h"
 
 loom::MNISTDataset::MNISTDataset(const std::string& data_path, const std::string& label_path)
     : mImages(Tensor::zeros({0, sImageSize}, DType::FLOAT32)),

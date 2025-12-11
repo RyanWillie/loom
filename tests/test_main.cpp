@@ -7,7 +7,7 @@
 // - test_type_traits.cpp: C++20 concepts and type traits
 // - test_logger.cpp: Logger functionality
 
-#include "common/logger.h"
+#include "loom/logger.h"
 #include <gtest/gtest.h>
 
 // ============================================================================

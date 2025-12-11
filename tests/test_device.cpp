@@ -1,4 +1,4 @@
-#include "common/device.h"
+#include "loom/device.h"
 #include <gtest/gtest.h>
 
 using namespace loom;

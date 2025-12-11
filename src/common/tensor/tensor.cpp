@@ -1,4 +1,4 @@
-#include "common/tensor/tensor.h"
+#include "loom/tensor/tensor.h"
 
 #include <cstring>
 #include <iomanip>
@@ -6,9 +6,29 @@
 #include <random>
 #include <sstream>
 
-#include "common/logger.h"
+#include "loom/autograd/engine.h"
+#include "loom/autograd/no_grad.h"
+#include "loom/autograd/nodes/activation_ops.h"
+#include "loom/autograd/nodes/binary_ops.h"
+#include "loom/autograd/nodes/matmul_ops.h"
+#include "loom/autograd/nodes/reduction_ops.h"
+#include "loom/autograd/nodes/view_ops.h"
+#include "loom/logger.h"
+#include "loom/tensor/tensor_iterator.h"
 
 namespace loom {
+
+// Global random engine for reproducible random number generation
+namespace {
+std::mt19937& getRandomEngine() {
+    static std::mt19937 engine(std::random_device{}());
+    return engine;
+}
+}  // namespace
+
+void Tensor::manualSeed(uint64_t seed) {
+    getRandomEngine().seed(static_cast<std::mt19937::result_type>(seed));
+}
 
 Tensor::Tensor(const std::vector<size_t>& shape, const loom::DType dtype,
                const loom::Device& device)
@@ -35,7 +55,29 @@ Tensor Tensor::zeros(const std::vector<size_t>& shape, const loom::DType dtype,
 }
 
 Tensor& Tensor::zero() {
-    std::memset(mStorage->data().get(), 0, mStorage->sizeInBytes());
+    const size_t n = numel();
+    if (n == 0) {
+        return *this;
+    }
+
+    // Fast path: row-major contiguous view can be memset starting at the view base.
+    if (isContiguous()) {
+        auto* base = static_cast<unsigned char*>(mStorage->data().get());
+        std::memset(base + mOffset * sizeOf(dtype()), 0, n * sizeOf(dtype()));
+    } else {
+        dispatchByDType(dtype(), mStorage->data().get(), mStorage->size(), [&](auto* base, size_t) {
+            using T = std::remove_pointer_t<decltype(base)>;
+            TensorIterator it(mShape, mStride, mOffset);
+            while (it.hasNext()) {
+                base[it.offset()] = static_cast<T>(0);
+                it.next();
+            }
+        });
+    }
+
+    // Increment version for in-place operation detection
+    bumpVersion();
+
     return *this;
 }
 
@@ -48,13 +90,27 @@ Tensor Tensor::ones(const std::vector<size_t>& shape, const loom::DType dtype,
 }
 
 Tensor& Tensor::one() {
-    loom::DType dt = dtype();
-    size_t num_elements = mStorage->size();
+    const size_t n = numel();
+    if (n == 0) {
+        return *this;
+    }
 
-    dispatchByDType(dt, mStorage->data().get(), num_elements, [](auto* data, size_t size) {
-        using T = std::remove_pointer_t<decltype(data)>;
-        std::fill_n(data, size, static_cast<T>(1));
+    dispatchByDType(dtype(), mStorage->data().get(), mStorage->size(), [&](auto* base, size_t) {
+        using T = std::remove_pointer_t<decltype(base)>;
+        if (isContiguous()) {
+            std::fill_n(base + mOffset, n, static_cast<T>(1));
+        } else {
+            TensorIterator it(mShape, mStride, mOffset);
+            while (it.hasNext()) {
+                base[it.offset()] = static_cast<T>(1);
+                it.next();
+            }
+        }
     });
+
+    // Increment version for in-place operation detection
+    bumpVersion();
+
     return *this;
 }
 
@@ -67,16 +123,33 @@ Tensor Tensor::rand(const std::vector<size_t>& shape, const loom::DType dtype,
 }
 
 Tensor& Tensor::rand() {
-    std::random_device rd;
-    std::mt19937 gen(rd());
+    auto& gen = getRandomEngine();
     std::uniform_real_distribution<double> dis(0.0, 1.0);
 
-    dispatchByDType(dtype(), mStorage->data().get(), mStorage->size(), [&](auto* ptr, size_t n) {
-        using T = std::remove_pointer_t<decltype(ptr)>;
-        for (size_t i = 0; i < n; ++i) {
-            ptr[i] = static_cast<T>(dis(gen));
+    const size_t n = numel();
+    if (n == 0) {
+        return *this;
+    }
+
+    dispatchByDType(dtype(), mStorage->data().get(), mStorage->size(), [&](auto* base, size_t) {
+        using T = std::remove_pointer_t<decltype(base)>;
+        if (isContiguous()) {
+            T* ptr = base + mOffset;
+            for (size_t i = 0; i < n; ++i) {
+                ptr[i] = static_cast<T>(dis(gen));
+            }
+        } else {
+            TensorIterator it(mShape, mStride, mOffset);
+            while (it.hasNext()) {
+                base[it.offset()] = static_cast<T>(dis(gen));
+                it.next();
+            }
         }
     });
+
+    // Increment version for in-place operation detection
+    bumpVersion();
+
     return *this;
 }
 
@@ -89,30 +162,64 @@ Tensor Tensor::randn(const std::vector<size_t>& shape, const loom::DType dtype,
 }
 
 Tensor& Tensor::randn() {
-    std::random_device rd;
-    std::mt19937 gen(rd());
+    auto& gen = getRandomEngine();
     std::normal_distribution<double> dis(0.0, 1.0);
 
-    dispatchByDType(dtype(), mStorage->data().get(), mStorage->size(), [&](auto* ptr, size_t n) {
-        using T = std::remove_pointer_t<decltype(ptr)>;
-        for (size_t i = 0; i < n; ++i) {
-            ptr[i] = static_cast<T>(dis(gen));
+    const size_t n = numel();
+    if (n == 0) {
+        return *this;
+    }
+
+    dispatchByDType(dtype(), mStorage->data().get(), mStorage->size(), [&](auto* base, size_t) {
+        using T = std::remove_pointer_t<decltype(base)>;
+        if (isContiguous()) {
+            T* ptr = base + mOffset;
+            for (size_t i = 0; i < n; ++i) {
+                ptr[i] = static_cast<T>(dis(gen));
+            }
+        } else {
+            TensorIterator it(mShape, mStride, mOffset);
+            while (it.hasNext()) {
+                base[it.offset()] = static_cast<T>(dis(gen));
+                it.next();
+            }
         }
     });
+
+    // Increment version for in-place operation detection
+    bumpVersion();
+
     return *this;
 }
 
 Tensor& Tensor::uniform(const double min, const double max) {
-    std::random_device rd;
-    std::mt19937 gen(rd());
+    auto& gen = getRandomEngine();
     std::uniform_real_distribution<double> dis(min, max);
 
-    dispatchByDType(dtype(), mStorage->data().get(), mStorage->size(), [&](auto* ptr, size_t n) {
-        using T = std::remove_pointer_t<decltype(ptr)>;
-        for (size_t i = 0; i < n; ++i) {
-            ptr[i] = static_cast<T>(dis(gen));
+    const size_t n = numel();
+    if (n == 0) {
+        return *this;
+    }
+
+    dispatchByDType(dtype(), mStorage->data().get(), mStorage->size(), [&](auto* base, size_t) {
+        using T = std::remove_pointer_t<decltype(base)>;
+        if (isContiguous()) {
+            T* ptr = base + mOffset;
+            for (size_t i = 0; i < n; ++i) {
+                ptr[i] = static_cast<T>(dis(gen));
+            }
+        } else {
+            TensorIterator it(mShape, mStride, mOffset);
+            while (it.hasNext()) {
+                base[it.offset()] = static_cast<T>(dis(gen));
+                it.next();
+            }
         }
     });
+
+    // Increment version for in-place operation detection
+    bumpVersion();
+
     return *this;
 }
 
@@ -125,16 +232,57 @@ Tensor Tensor::full(const std::vector<size_t>& shape, const double value, const 
 }
 
 Tensor& Tensor::fill(const double value) {
-    dispatchByDType(dtype(), mStorage->data().get(), mStorage->size(), [&](auto* ptr, size_t n) {
-        using T = std::remove_pointer_t<decltype(ptr)>;
-        std::fill_n(ptr, n, static_cast<T>(value));
+    const size_t n = numel();
+    if (n == 0) {
+        return *this;
+    }
+
+    dispatchByDType(dtype(), mStorage->data().get(), mStorage->size(), [&](auto* base, size_t) {
+        using T = std::remove_pointer_t<decltype(base)>;
+        const T v = static_cast<T>(value);
+        if (isContiguous()) {
+            std::fill_n(base + mOffset, n, v);
+        } else {
+            TensorIterator it(mShape, mStride, mOffset);
+            while (it.hasNext()) {
+                base[it.offset()] = v;
+                it.next();
+            }
+        }
     });
+
+    // Increment version for in-place operation detection
+    bumpVersion();
+
     return *this;
 }
 
 Tensor Tensor::clone() const {
-    Storage storage = mStorage->clone();
-    return {std::make_shared<Storage>(storage), mShape, mStride, mOffset};
+    // Deep copy of the *logical tensor* (respects shape/stride/offset), not the entire storage.
+    Tensor result(mShape, dtype(), device());
+    const size_t n = numel();
+    if (n == 0) {
+        return result;
+    }
+
+    dispatchByDType(dtype(), result.mStorage->data().get(), result.mStorage->size(),
+                    [&](auto* dst_base, size_t) {
+                        using T = std::remove_pointer_t<decltype(dst_base)>;
+                        const T* src_base = static_cast<const T*>(mStorage->data().get());
+
+                        if (isContiguous()) {
+                            std::memcpy(dst_base, src_base + mOffset, n * sizeof(T));
+                            return;
+                        }
+
+                        size_t di = 0;
+                        TensorIterator it(mShape, mStride, mOffset);
+                        while (it.hasNext()) {
+                            dst_base[di++] = src_base[it.offset()];
+                            it.next();
+                        }
+                    });
+    return result;
 }
 
 std::vector<size_t> Tensor::calculateStride(const std::vector<size_t>& shape) {
@@ -257,11 +405,10 @@ bool Tensor::isContiguous() const {
         return true;
     }
 
-    // A tensor is contiguous if:
-    // 1. Offset is 0 (starts at beginning of storage)
-    // 2. Strides match row-major layout
+    // A tensor is contiguous (row-major) if strides match the canonical row-major layout.
+    // Note: offset does NOT affect contiguity; it only changes the base element.
     std::vector<size_t> expectedStride = calculateStride(mShape);
-    return mOffset == 0 && mStride == expectedStride;
+    return mStride == expectedStride;
 }
 
 double Tensor::item() const {
@@ -333,31 +480,263 @@ Tensor Tensor::toDevice(const Device& device) const {
 }
 
 Tensor Tensor::operator+(const Tensor& other) const {
-    if (mShape == other.mShape) {
-        return clone() += other;
+    if (other.dtype() != dtype()) {
+        throw std::runtime_error("DType mismatch for addition");
     }
-    return broadcastOp(other, [](auto a, auto b) { return a + b; });
+
+    // Forward pass - compute the result (stride-aware; never mutates inputs)
+    Tensor result = [&]() {
+        if (mShape != other.mShape) {
+            return broadcastOp(other, [](auto a, auto b) { return a + b; });
+        }
+
+        Tensor out = Tensor::zeros(mShape, dtype(), device());
+        const size_t n = out.numel();
+        if (n == 0) {
+            return out;
+        }
+
+        dispatchByDType(dtype(), out.mStorage->data().get(), out.mStorage->size(),
+                        [&](auto* out_base, size_t) {
+                            using T = std::remove_pointer_t<decltype(out_base)>;
+                            const T* a_base = static_cast<const T*>(mStorage->data().get());
+                            const T* b_base = static_cast<const T*>(other.mStorage->data().get());
+
+                            if (isContiguous() && other.isContiguous()) {
+                                const T* ap = a_base + mOffset;
+                                const T* bp = b_base + other.mOffset;
+                                for (size_t i = 0; i < n; ++i) {
+                                    out_base[i] = ap[i] + bp[i];
+                                }
+                                return;
+                            }
+
+                            size_t di = 0;
+                            TensorIterator it_a(mShape, mStride, mOffset);
+                            TensorIterator it_b(other.mShape, other.mStride, other.mOffset);
+                            while (it_a.hasNext()) {
+                                out_base[di++] = a_base[it_a.offset()] + b_base[it_b.offset()];
+                                it_a.next();
+                                it_b.next();
+                            }
+                        });
+
+        return out;
+    }();
+
+    if ((!requiresGrad() && !other.requiresGrad()) || autograd::NoGradMode::isEnabled()) {
+        return result;
+    }
+
+    // Build computation graph for backward pass
+    auto add_node = std::make_shared<autograd::AddBackward>(mShape, other.mShape);
+
+    std::vector<std::shared_ptr<autograd::Node>> next_fns;
+    if (gradFn())
+        next_fns.push_back(gradFn());
+    if (other.gradFn())
+        next_fns.push_back(other.gradFn());
+    add_node->setNextFunctions(next_fns);
+    add_node->setInputTensors({std::make_shared<Tensor>(*this), std::make_shared<Tensor>(other)});
+
+    result.setGradFn(add_node);
+    result.requiresGrad(true);
+    return result;
 }
 
 Tensor Tensor::operator-(const Tensor& other) const {
-    if (mShape == other.mShape) {
-        return clone() -= other;
+    if (other.dtype() != dtype()) {
+        throw std::runtime_error("DType mismatch for subtraction");
     }
-    return broadcastOp(other, [](auto a, auto b) { return a - b; });
+
+    // Forward pass - compute the result (stride-aware; never mutates inputs)
+    Tensor result = [&]() {
+        if (mShape != other.mShape) {
+            return broadcastOp(other, [](auto a, auto b) { return a - b; });
+        }
+
+        Tensor out = Tensor::zeros(mShape, dtype(), device());
+        const size_t n = out.numel();
+        if (n == 0) {
+            return out;
+        }
+
+        dispatchByDType(dtype(), out.mStorage->data().get(), out.mStorage->size(),
+                        [&](auto* out_base, size_t) {
+                            using T = std::remove_pointer_t<decltype(out_base)>;
+                            const T* a_base = static_cast<const T*>(mStorage->data().get());
+                            const T* b_base = static_cast<const T*>(other.mStorage->data().get());
+
+                            if (isContiguous() && other.isContiguous()) {
+                                const T* ap = a_base + mOffset;
+                                const T* bp = b_base + other.mOffset;
+                                for (size_t i = 0; i < n; ++i) {
+                                    out_base[i] = ap[i] - bp[i];
+                                }
+                                return;
+                            }
+
+                            size_t di = 0;
+                            TensorIterator it_a(mShape, mStride, mOffset);
+                            TensorIterator it_b(mShape, other.mStride, other.mOffset);
+                            while (it_a.hasNext()) {
+                                out_base[di++] = a_base[it_a.offset()] - b_base[it_b.offset()];
+                                it_a.next();
+                                it_b.next();
+                            }
+                        });
+
+        return out;
+    }();
+
+    if ((!requiresGrad() && !other.requiresGrad()) || autograd::NoGradMode::isEnabled()) {
+        return result;
+    }
+
+    // Build computation graph for backward pass
+    auto sub_node = std::make_shared<autograd::SubBackward>(mShape, other.mShape);
+
+    std::vector<std::shared_ptr<autograd::Node>> next_fns;
+    if (gradFn())
+        next_fns.push_back(gradFn());
+    if (other.gradFn())
+        next_fns.push_back(other.gradFn());
+    sub_node->setNextFunctions(next_fns);
+    sub_node->setInputTensors({std::make_shared<Tensor>(*this), std::make_shared<Tensor>(other)});
+
+    result.setGradFn(sub_node);
+    result.requiresGrad(true);
+    return result;
 }
 
 Tensor Tensor::operator*(const Tensor& other) const {
-    if (mShape == other.mShape) {
-        return clone() *= other;
+    if (other.dtype() != dtype()) {
+        throw std::runtime_error("DType mismatch for multiplication");
     }
-    return broadcastOp(other, [](auto a, auto b) { return a * b; });
+
+    // Forward pass - compute the result (stride-aware; never mutates inputs)
+    Tensor result = [&]() {
+        if (mShape != other.mShape) {
+            return broadcastOp(other, [](auto a, auto b) { return a * b; });
+        }
+
+        Tensor out = Tensor::zeros(mShape, dtype(), device());
+        const size_t n = out.numel();
+        if (n == 0) {
+            return out;
+        }
+
+        dispatchByDType(dtype(), out.mStorage->data().get(), out.mStorage->size(),
+                        [&](auto* out_base, size_t) {
+                            using T = std::remove_pointer_t<decltype(out_base)>;
+                            const T* a_base = static_cast<const T*>(mStorage->data().get());
+                            const T* b_base = static_cast<const T*>(other.mStorage->data().get());
+
+                            if (isContiguous() && other.isContiguous()) {
+                                const T* ap = a_base + mOffset;
+                                const T* bp = b_base + other.mOffset;
+                                for (size_t i = 0; i < n; ++i) {
+                                    out_base[i] = ap[i] * bp[i];
+                                }
+                                return;
+                            }
+
+                            size_t di = 0;
+                            TensorIterator it_a(mShape, mStride, mOffset);
+                            TensorIterator it_b(mShape, other.mStride, other.mOffset);
+                            while (it_a.hasNext()) {
+                                out_base[di++] = a_base[it_a.offset()] * b_base[it_b.offset()];
+                                it_a.next();
+                                it_b.next();
+                            }
+                        });
+
+        return out;
+    }();
+
+    if ((!requiresGrad() && !other.requiresGrad()) || autograd::NoGradMode::isEnabled()) {
+        return result;
+    }
+
+    // Build computation graph for backward pass (saves input values for gradient)
+    auto mul_node = std::make_shared<autograd::MulBackward>(*this, other, mShape, other.mShape);
+
+    std::vector<std::shared_ptr<autograd::Node>> next_fns;
+    if (gradFn())
+        next_fns.push_back(gradFn());
+    if (other.gradFn())
+        next_fns.push_back(other.gradFn());
+    mul_node->setNextFunctions(next_fns);
+    mul_node->setInputTensors({std::make_shared<Tensor>(*this), std::make_shared<Tensor>(other)});
+
+    result.setGradFn(mul_node);
+    result.requiresGrad(true);
+    return result;
 }
 
 Tensor Tensor::operator/(const Tensor& other) const {
-    if (mShape == other.mShape) {
-        return clone() /= other;
+    if (other.dtype() != dtype()) {
+        throw std::runtime_error("DType mismatch for division");
     }
-    return broadcastOp(other, [](auto a, auto b) { return a / b; });
+
+    // Forward pass - compute the result (stride-aware; never mutates inputs)
+    Tensor result = [&]() {
+        if (mShape != other.mShape) {
+            return broadcastOp(other, [](auto a, auto b) { return a / b; });
+        }
+
+        Tensor out = Tensor::zeros(mShape, dtype(), device());
+        const size_t n = out.numel();
+        if (n == 0) {
+            return out;
+        }
+
+        dispatchByDType(dtype(), out.mStorage->data().get(), out.mStorage->size(),
+                        [&](auto* out_base, size_t) {
+                            using T = std::remove_pointer_t<decltype(out_base)>;
+                            const T* a_base = static_cast<const T*>(mStorage->data().get());
+                            const T* b_base = static_cast<const T*>(other.mStorage->data().get());
+
+                            if (isContiguous() && other.isContiguous()) {
+                                const T* ap = a_base + mOffset;
+                                const T* bp = b_base + other.mOffset;
+                                for (size_t i = 0; i < n; ++i) {
+                                    out_base[i] = ap[i] / bp[i];
+                                }
+                                return;
+                            }
+
+                            size_t di = 0;
+                            TensorIterator it_a(mShape, mStride, mOffset);
+                            TensorIterator it_b(mShape, other.mStride, other.mOffset);
+                            while (it_a.hasNext()) {
+                                out_base[di++] = a_base[it_a.offset()] / b_base[it_b.offset()];
+                                it_a.next();
+                                it_b.next();
+                            }
+                        });
+
+        return out;
+    }();
+
+    if ((!requiresGrad() && !other.requiresGrad()) || autograd::NoGradMode::isEnabled()) {
+        return result;
+    }
+
+    // Build computation graph for backward pass (saves input values for gradient)
+    auto div_node = std::make_shared<autograd::DivBackward>(*this, other, mShape, other.mShape);
+
+    std::vector<std::shared_ptr<autograd::Node>> next_fns;
+    if (gradFn())
+        next_fns.push_back(gradFn());
+    if (other.gradFn())
+        next_fns.push_back(other.gradFn());
+    div_node->setNextFunctions(next_fns);
+    div_node->setInputTensors({std::make_shared<Tensor>(*this), std::make_shared<Tensor>(other)});
+
+    result.setGradFn(div_node);
+    result.requiresGrad(true);
+    return result;
 }
 
 Tensor& Tensor::operator+=(const Tensor& other) {
@@ -368,14 +747,42 @@ Tensor& Tensor::operator+=(const Tensor& other) {
         throw std::runtime_error("DType mismatch for addition");
     }
 
-    dispatchByDType(dtype(), mStorage->data().get(), mStorage->size(), [&](auto* ptr, size_t n) {
-        using T = std::remove_pointer_t<decltype(ptr)>;
-        const T* other_ptr = static_cast<const T*>(other.mStorage->data().get());
+    // If RHS aliases LHS storage but has a different view mapping, materialize RHS first
+    // to avoid order-dependent reads.
+    const bool rhs_aliases = (mStorage.get() == other.mStorage.get());
+    const bool rhs_mapping_differs = (mOffset != other.mOffset) || (mStride != other.mStride);
+    Tensor rhs = (rhs_aliases && rhs_mapping_differs) ? other.clone() : other;
 
-        for (size_t i = 0; i < n; ++i) {
-            ptr[i] += other_ptr[i];
+    dispatchByDType(dtype(), mStorage->data().get(), mStorage->size(), [&](auto* base, size_t) {
+        using T = std::remove_pointer_t<decltype(base)>;
+        const T* rhs_base = static_cast<const T*>(rhs.mStorage->data().get());
+
+        const size_t n = numel();
+        if (n == 0) {
+            return;
+        }
+
+        if (isContiguous() && rhs.isContiguous()) {
+            T* lhs_ptr = base + mOffset;
+            const T* rhs_ptr = rhs_base + rhs.mOffset;
+            for (size_t i = 0; i < n; ++i) {
+                lhs_ptr[i] += rhs_ptr[i];
+            }
+            return;
+        }
+
+        TensorIterator it_l(mShape, mStride, mOffset);
+        TensorIterator it_r(mShape, rhs.mStride, rhs.mOffset);
+        while (it_l.hasNext()) {
+            base[it_l.offset()] += rhs_base[it_r.offset()];
+            it_l.next();
+            it_r.next();
         }
     });
+
+    // Increment version for in-place operation detection
+    bumpVersion();
+
     return *this;
 }
 
@@ -388,14 +795,40 @@ Tensor& Tensor::operator-=(const Tensor& other) {
         throw std::runtime_error("DType mismatch for subtraction");
     }
 
-    dispatchByDType(dtype(), mStorage->data().get(), mStorage->size(), [&](auto* ptr, size_t n) {
-        using T = std::remove_pointer_t<decltype(ptr)>;
-        const T* other_ptr = static_cast<const T*>(other.mStorage->data().get());
+    const bool rhs_aliases = (mStorage.get() == other.mStorage.get());
+    const bool rhs_mapping_differs = (mOffset != other.mOffset) || (mStride != other.mStride);
+    Tensor rhs = (rhs_aliases && rhs_mapping_differs) ? other.clone() : other;
 
-        for (size_t i = 0; i < n; ++i) {
-            ptr[i] -= other_ptr[i];
+    dispatchByDType(dtype(), mStorage->data().get(), mStorage->size(), [&](auto* base, size_t) {
+        using T = std::remove_pointer_t<decltype(base)>;
+        const T* rhs_base = static_cast<const T*>(rhs.mStorage->data().get());
+
+        const size_t n = numel();
+        if (n == 0) {
+            return;
+        }
+
+        if (isContiguous() && rhs.isContiguous()) {
+            T* lhs_ptr = base + mOffset;
+            const T* rhs_ptr = rhs_base + rhs.mOffset;
+            for (size_t i = 0; i < n; ++i) {
+                lhs_ptr[i] -= rhs_ptr[i];
+            }
+            return;
+        }
+
+        TensorIterator it_l(mShape, mStride, mOffset);
+        TensorIterator it_r(mShape, rhs.mStride, rhs.mOffset);
+        while (it_l.hasNext()) {
+            base[it_l.offset()] -= rhs_base[it_r.offset()];
+            it_l.next();
+            it_r.next();
         }
     });
+
+    // Increment version for in-place operation detection
+    bumpVersion();
+
     return *this;
 }
 
@@ -407,14 +840,40 @@ Tensor& Tensor::operator*=(const Tensor& other) {
         throw std::runtime_error("DType mismatch for multiplication");
     }
 
-    dispatchByDType(dtype(), mStorage->data().get(), mStorage->size(), [&](auto* ptr, size_t n) {
-        using T = std::remove_pointer_t<decltype(ptr)>;
-        const T* other_ptr = static_cast<const T*>(other.mStorage->data().get());
+    const bool rhs_aliases = (mStorage.get() == other.mStorage.get());
+    const bool rhs_mapping_differs = (mOffset != other.mOffset) || (mStride != other.mStride);
+    Tensor rhs = (rhs_aliases && rhs_mapping_differs) ? other.clone() : other;
 
-        for (size_t i = 0; i < n; ++i) {
-            ptr[i] *= other_ptr[i];
+    dispatchByDType(dtype(), mStorage->data().get(), mStorage->size(), [&](auto* base, size_t) {
+        using T = std::remove_pointer_t<decltype(base)>;
+        const T* rhs_base = static_cast<const T*>(rhs.mStorage->data().get());
+
+        const size_t n = numel();
+        if (n == 0) {
+            return;
+        }
+
+        if (isContiguous() && rhs.isContiguous()) {
+            T* lhs_ptr = base + mOffset;
+            const T* rhs_ptr = rhs_base + rhs.mOffset;
+            for (size_t i = 0; i < n; ++i) {
+                lhs_ptr[i] *= rhs_ptr[i];
+            }
+            return;
+        }
+
+        TensorIterator it_l(mShape, mStride, mOffset);
+        TensorIterator it_r(mShape, rhs.mStride, rhs.mOffset);
+        while (it_l.hasNext()) {
+            base[it_l.offset()] *= rhs_base[it_r.offset()];
+            it_l.next();
+            it_r.next();
         }
     });
+
+    // Increment version for in-place operation detection
+    bumpVersion();
+
     return *this;
 }
 
@@ -426,75 +885,349 @@ Tensor& Tensor::operator/=(const Tensor& other) {
         throw std::runtime_error("DType mismatch for division");
     }
 
-    dispatchByDType(dtype(), mStorage->data().get(), mStorage->size(), [&](auto* ptr, size_t n) {
-        using T = std::remove_pointer_t<decltype(ptr)>;
-        const T* other_ptr = static_cast<const T*>(other.mStorage->data().get());
+    const bool rhs_aliases = (mStorage.get() == other.mStorage.get());
+    const bool rhs_mapping_differs = (mOffset != other.mOffset) || (mStride != other.mStride);
+    Tensor rhs = (rhs_aliases && rhs_mapping_differs) ? other.clone() : other;
 
-        for (size_t i = 0; i < n; ++i) {
-            ptr[i] /= other_ptr[i];
+    dispatchByDType(dtype(), mStorage->data().get(), mStorage->size(), [&](auto* base, size_t) {
+        using T = std::remove_pointer_t<decltype(base)>;
+        const T* rhs_base = static_cast<const T*>(rhs.mStorage->data().get());
+
+        const size_t n = numel();
+        if (n == 0) {
+            return;
+        }
+
+        if (isContiguous() && rhs.isContiguous()) {
+            T* lhs_ptr = base + mOffset;
+            const T* rhs_ptr = rhs_base + rhs.mOffset;
+            for (size_t i = 0; i < n; ++i) {
+                lhs_ptr[i] /= rhs_ptr[i];
+            }
+            return;
+        }
+
+        TensorIterator it_l(mShape, mStride, mOffset);
+        TensorIterator it_r(mShape, rhs.mStride, rhs.mOffset);
+        while (it_l.hasNext()) {
+            base[it_l.offset()] /= rhs_base[it_r.offset()];
+            it_l.next();
+            it_r.next();
         }
     });
+
+    // Increment version for in-place operation detection
+    bumpVersion();
+
     return *this;
 }
 
 Tensor& Tensor::operator+=(const double scalar) {
-    dispatchByDType(dtype(), mStorage->data().get(), mStorage->size(), [&](auto* ptr, size_t n) {
-        using T = std::remove_pointer_t<decltype(ptr)>;
-        T scalar_value = static_cast<T>(scalar);
-        for (size_t i = 0; i < n; ++i) {
-            ptr[i] += scalar_value;
+    const size_t n = numel();
+    if (n == 0) {
+        return *this;
+    }
+
+    dispatchByDType(dtype(), mStorage->data().get(), mStorage->size(), [&](auto* base, size_t) {
+        using T = std::remove_pointer_t<decltype(base)>;
+        const T v = static_cast<T>(scalar);
+
+        if (isContiguous()) {
+            T* ptr = base + mOffset;
+            for (size_t i = 0; i < n; ++i) {
+                ptr[i] += v;
+            }
+            return;
+        }
+
+        TensorIterator it(mShape, mStride, mOffset);
+        while (it.hasNext()) {
+            base[it.offset()] += v;
+            it.next();
         }
     });
+
+    // Increment version for in-place operation detection
+    bumpVersion();
+
     return *this;
 }
 
 Tensor& Tensor::operator-=(const double scalar) {
-    dispatchByDType(dtype(), mStorage->data().get(), mStorage->size(), [&](auto* ptr, size_t n) {
-        using T = std::remove_pointer_t<decltype(ptr)>;
-        T scalar_value = static_cast<T>(scalar);
-        for (size_t i = 0; i < n; ++i) {
-            ptr[i] -= scalar_value;
+    const size_t n = numel();
+    if (n == 0) {
+        return *this;
+    }
+
+    dispatchByDType(dtype(), mStorage->data().get(), mStorage->size(), [&](auto* base, size_t) {
+        using T = std::remove_pointer_t<decltype(base)>;
+        const T v = static_cast<T>(scalar);
+
+        if (isContiguous()) {
+            T* ptr = base + mOffset;
+            for (size_t i = 0; i < n; ++i) {
+                ptr[i] -= v;
+            }
+            return;
+        }
+
+        TensorIterator it(mShape, mStride, mOffset);
+        while (it.hasNext()) {
+            base[it.offset()] -= v;
+            it.next();
         }
     });
+
+    // Increment version for in-place operation detection
+    bumpVersion();
+
     return *this;
 }
 
 Tensor& Tensor::operator*=(const double scalar) {
-    dispatchByDType(dtype(), mStorage->data().get(), mStorage->size(), [&](auto* ptr, size_t n) {
-        using T = std::remove_pointer_t<decltype(ptr)>;
-        T scalar_value = static_cast<T>(scalar);
-        for (size_t i = 0; i < n; ++i) {
-            ptr[i] *= scalar_value;
+    const size_t n = numel();
+    if (n == 0) {
+        return *this;
+    }
+
+    dispatchByDType(dtype(), mStorage->data().get(), mStorage->size(), [&](auto* base, size_t) {
+        using T = std::remove_pointer_t<decltype(base)>;
+        const T v = static_cast<T>(scalar);
+
+        if (isContiguous()) {
+            T* ptr = base + mOffset;
+            for (size_t i = 0; i < n; ++i) {
+                ptr[i] *= v;
+            }
+            return;
+        }
+
+        TensorIterator it(mShape, mStride, mOffset);
+        while (it.hasNext()) {
+            base[it.offset()] *= v;
+            it.next();
         }
     });
+
+    // Increment version for in-place operation detection
+    bumpVersion();
+
     return *this;
 }
 
 Tensor& Tensor::operator/=(const double scalar) {
-    dispatchByDType(dtype(), mStorage->data().get(), mStorage->size(), [&](auto* ptr, size_t n) {
-        using T = std::remove_pointer_t<decltype(ptr)>;
-        T scalar_value = static_cast<T>(scalar);
-        for (size_t i = 0; i < n; ++i) {
-            ptr[i] /= scalar_value;
+    const size_t n = numel();
+    if (n == 0) {
+        return *this;
+    }
+
+    dispatchByDType(dtype(), mStorage->data().get(), mStorage->size(), [&](auto* base, size_t) {
+        using T = std::remove_pointer_t<decltype(base)>;
+        const T v = static_cast<T>(scalar);
+
+        if (isContiguous()) {
+            T* ptr = base + mOffset;
+            for (size_t i = 0; i < n; ++i) {
+                ptr[i] /= v;
+            }
+            return;
+        }
+
+        TensorIterator it(mShape, mStride, mOffset);
+        while (it.hasNext()) {
+            base[it.offset()] /= v;
+            it.next();
         }
     });
+
+    // Increment version for in-place operation detection
+    bumpVersion();
+
     return *this;
 }
 
 Tensor Tensor::operator+(const double scalar) const {
-    return clone() += scalar;
+    Tensor result = Tensor::zeros(mShape, dtype(), device());
+    const size_t n = numel();
+    if (n == 0) {
+        return result;
+    }
+
+    dispatchByDType(dtype(), result.mStorage->data().get(), result.mStorage->size(),
+                    [&](auto* out_base, size_t) {
+                        using T = std::remove_pointer_t<decltype(out_base)>;
+                        const T* src_base = static_cast<const T*>(mStorage->data().get());
+                        const T v = static_cast<T>(scalar);
+
+                        if (isContiguous()) {
+                            const T* sp = src_base + mOffset;
+                            for (size_t i = 0; i < n; ++i) {
+                                out_base[i] = sp[i] + v;
+                            }
+                            return;
+                        }
+
+                        size_t di = 0;
+                        TensorIterator it(mShape, mStride, mOffset);
+                        while (it.hasNext()) {
+                            out_base[di++] = src_base[it.offset()] + v;
+                            it.next();
+                        }
+                    });
+
+    if (requiresGrad() && !autograd::NoGradMode::isEnabled()) {
+        auto add_node = std::make_shared<autograd::ScalarAddBackward>();
+
+        std::vector<std::shared_ptr<autograd::Node>> next_fns;
+        if (gradFn()) {
+            next_fns.push_back(gradFn());
+        }
+        add_node->setNextFunctions(next_fns);
+        add_node->setInputTensors({std::make_shared<Tensor>(*this)});
+
+        result.setGradFn(add_node);
+        result.requiresGrad(true);
+    }
+
+    return result;
 }
 
 Tensor Tensor::operator-(const double scalar) const {
-    return clone() -= scalar;
+    Tensor result = Tensor::zeros(mShape, dtype(), device());
+    const size_t n = numel();
+    if (n == 0) {
+        return result;
+    }
+
+    dispatchByDType(dtype(), result.mStorage->data().get(), result.mStorage->size(),
+                    [&](auto* out_base, size_t) {
+                        using T = std::remove_pointer_t<decltype(out_base)>;
+                        const T* src_base = static_cast<const T*>(mStorage->data().get());
+                        const T v = static_cast<T>(scalar);
+
+                        if (isContiguous()) {
+                            const T* sp = src_base + mOffset;
+                            for (size_t i = 0; i < n; ++i) {
+                                out_base[i] = sp[i] - v;
+                            }
+                            return;
+                        }
+
+                        size_t di = 0;
+                        TensorIterator it(mShape, mStride, mOffset);
+                        while (it.hasNext()) {
+                            out_base[di++] = src_base[it.offset()] - v;
+                            it.next();
+                        }
+                    });
+
+    if (requiresGrad() && !autograd::NoGradMode::isEnabled()) {
+        auto sub_node = std::make_shared<autograd::ScalarSubBackward>();
+
+        std::vector<std::shared_ptr<autograd::Node>> next_fns;
+        if (gradFn()) {
+            next_fns.push_back(gradFn());
+        }
+        sub_node->setNextFunctions(next_fns);
+        sub_node->setInputTensors({std::make_shared<Tensor>(*this)});
+
+        result.setGradFn(sub_node);
+        result.requiresGrad(true);
+    }
+
+    return result;
 }
 
 Tensor Tensor::operator*(const double scalar) const {
-    return clone() *= scalar;
+    Tensor result = Tensor::zeros(mShape, dtype(), device());
+    const size_t n = numel();
+    if (n == 0) {
+        return result;
+    }
+
+    dispatchByDType(dtype(), result.mStorage->data().get(), result.mStorage->size(),
+                    [&](auto* out_base, size_t) {
+                        using T = std::remove_pointer_t<decltype(out_base)>;
+                        const T* src_base = static_cast<const T*>(mStorage->data().get());
+                        const T v = static_cast<T>(scalar);
+
+                        if (isContiguous()) {
+                            const T* sp = src_base + mOffset;
+                            for (size_t i = 0; i < n; ++i) {
+                                out_base[i] = sp[i] * v;
+                            }
+                            return;
+                        }
+
+                        size_t di = 0;
+                        TensorIterator it(mShape, mStride, mOffset);
+                        while (it.hasNext()) {
+                            out_base[di++] = src_base[it.offset()] * v;
+                            it.next();
+                        }
+                    });
+
+    if (requiresGrad() && !autograd::NoGradMode::isEnabled()) {
+        auto mul_node = std::make_shared<autograd::ScalarMulBackward>(scalar);
+
+        std::vector<std::shared_ptr<autograd::Node>> next_fns;
+        if (gradFn()) {
+            next_fns.push_back(gradFn());
+        }
+        mul_node->setNextFunctions(next_fns);
+        mul_node->setInputTensors({std::make_shared<Tensor>(*this)});
+
+        result.setGradFn(mul_node);
+        result.requiresGrad(true);
+    }
+
+    return result;
 }
 
 Tensor Tensor::operator/(const double scalar) const {
-    return clone() /= scalar;
+    Tensor result = Tensor::zeros(mShape, dtype(), device());
+    const size_t n = numel();
+    if (n == 0) {
+        return result;
+    }
+
+    dispatchByDType(dtype(), result.mStorage->data().get(), result.mStorage->size(),
+                    [&](auto* out_base, size_t) {
+                        using T = std::remove_pointer_t<decltype(out_base)>;
+                        const T* src_base = static_cast<const T*>(mStorage->data().get());
+                        const T v = static_cast<T>(scalar);
+
+                        if (isContiguous()) {
+                            const T* sp = src_base + mOffset;
+                            for (size_t i = 0; i < n; ++i) {
+                                out_base[i] = sp[i] / v;
+                            }
+                            return;
+                        }
+
+                        size_t di = 0;
+                        TensorIterator it(mShape, mStride, mOffset);
+                        while (it.hasNext()) {
+                            out_base[di++] = src_base[it.offset()] / v;
+                            it.next();
+                        }
+                    });
+
+    if (requiresGrad() && !autograd::NoGradMode::isEnabled()) {
+        auto div_node = std::make_shared<autograd::ScalarDivBackward>(scalar);
+
+        std::vector<std::shared_ptr<autograd::Node>> next_fns;
+        if (gradFn()) {
+            next_fns.push_back(gradFn());
+        }
+        div_node->setNextFunctions(next_fns);
+        div_node->setInputTensors({std::make_shared<Tensor>(*this)});
+
+        result.setGradFn(div_node);
+        result.requiresGrad(true);
+    }
+
+    return result;
 }
 
 Tensor Tensor::flatten() const {
@@ -518,7 +1251,23 @@ Tensor Tensor::reshape(const std::vector<size_t>& shape) const {
     // Calculate new stride
     std::vector<size_t> new_stride = calculateStride(shape);
 
-    return Tensor(mStorage, shape, new_stride, mOffset);
+    Tensor result(mStorage, shape, new_stride, mOffset);
+
+    // Autograd: attach backward function for reshape
+    if (requiresGrad() && !autograd::NoGradMode::isEnabled()) {
+        auto reshape_node = std::make_shared<autograd::ReshapeBackward>(mShape);
+
+        std::vector<std::shared_ptr<autograd::Node>> next_fns;
+        if (gradFn())
+            next_fns.push_back(gradFn());
+        reshape_node->setNextFunctions(next_fns);
+        reshape_node->setInputTensors({std::make_shared<Tensor>(*this)});
+
+        result.setGradFn(reshape_node);
+        result.requiresGrad(true);
+    }
+
+    return result;
 }
 
 // Remove single-element dimensions
@@ -541,6 +1290,7 @@ Tensor Tensor::squeeze() const {
 }
 
 Tensor Tensor::squeeze(int dim) const {
+    int original_dim = dim;
     if (dim < 0) {
         dim += static_cast<int>(mShape.size());
     }
@@ -566,10 +1316,28 @@ Tensor Tensor::squeeze(int dim) const {
         new_stride = {1};
     }
 
-    return Tensor(mStorage, new_shape, new_stride, mOffset);
+    Tensor result(mStorage, new_shape, new_stride, mOffset);
+
+    // Autograd: attach backward function for squeeze
+    if (requiresGrad() && !autograd::NoGradMode::isEnabled()) {
+        auto squeeze_node = std::make_shared<autograd::SqueezeBackward>(original_dim);
+
+        std::vector<std::shared_ptr<autograd::Node>> next_fns;
+        if (gradFn())
+            next_fns.push_back(gradFn());
+        squeeze_node->setNextFunctions(next_fns);
+        squeeze_node->setInputTensors({std::make_shared<Tensor>(*this)});
+
+        result.setGradFn(squeeze_node);
+        result.requiresGrad(true);
+    }
+
+    return result;
 }
 
 Tensor Tensor::unsqueeze(int dim) const {
+    int original_dim = dim;
+
     // 1. Handle negative indexing
     int ndim_new = static_cast<int>(mShape.size()) + 1;
     if (dim < 0) {
@@ -590,7 +1358,23 @@ Tensor Tensor::unsqueeze(int dim) const {
     size_t stride_value = (dim < static_cast<int>(mStride.size())) ? mStride[dim] : 1;
     new_stride.insert(new_stride.begin() + dim, stride_value);
 
-    return Tensor(mStorage, new_shape, new_stride, mOffset);
+    Tensor result(mStorage, new_shape, new_stride, mOffset);
+
+    // Autograd: attach backward function for unsqueeze
+    if (requiresGrad() && !autograd::NoGradMode::isEnabled()) {
+        auto unsqueeze_node = std::make_shared<autograd::UnsqueezeBackward>(original_dim);
+
+        std::vector<std::shared_ptr<autograd::Node>> next_fns;
+        if (gradFn())
+            next_fns.push_back(gradFn());
+        unsqueeze_node->setNextFunctions(next_fns);
+        unsqueeze_node->setInputTensors({std::make_shared<Tensor>(*this)});
+
+        result.setGradFn(unsqueeze_node);
+        result.requiresGrad(true);
+    }
+
+    return result;
 }
 
 Tensor Tensor::transpose() const {
@@ -598,7 +1382,31 @@ Tensor Tensor::transpose() const {
         throw std::runtime_error("Tensor must have at least 2 dimensions for transpose");
     }
 
-    return transpose(static_cast<int>(mShape.size()) - 2, static_cast<int>(mShape.size()) - 1);
+    int dim0 = static_cast<int>(mShape.size()) - 2;
+    int dim1 = static_cast<int>(mShape.size()) - 1;
+
+    std::vector<size_t> new_shape = mShape;
+    std::vector<size_t> new_stride = mStride;
+    std::swap(new_shape[dim0], new_shape[dim1]);
+    std::swap(new_stride[dim0], new_stride[dim1]);
+
+    Tensor result(mStorage, new_shape, new_stride, mOffset);
+
+    // Autograd: attach backward function for transpose
+    if (requiresGrad() && !autograd::NoGradMode::isEnabled()) {
+        auto transpose_node = std::make_shared<autograd::TransposeBackward>();
+
+        std::vector<std::shared_ptr<autograd::Node>> next_fns;
+        if (gradFn())
+            next_fns.push_back(gradFn());
+        transpose_node->setNextFunctions(next_fns);
+        transpose_node->setInputTensors({std::make_shared<Tensor>(*this)});
+
+        result.setGradFn(transpose_node);
+        result.requiresGrad(true);
+    }
+
+    return result;
 }
 
 Tensor Tensor::transpose(int dim0, int dim1) const {
@@ -622,7 +1430,24 @@ Tensor Tensor::transpose(int dim0, int dim1) const {
     std::vector<size_t> new_stride = mStride;
     std::swap(new_shape[dim0], new_shape[dim1]);
     std::swap(new_stride[dim0], new_stride[dim1]);
-    return Tensor(mStorage, new_shape, new_stride, mOffset);
+
+    Tensor result(mStorage, new_shape, new_stride, mOffset);
+
+    // Autograd: attach backward function for transpose
+    if (requiresGrad() && !autograd::NoGradMode::isEnabled()) {
+        auto transpose_node = std::make_shared<autograd::TransposeBackward>(dim0, dim1);
+
+        std::vector<std::shared_ptr<autograd::Node>> next_fns;
+        if (gradFn())
+            next_fns.push_back(gradFn());
+        transpose_node->setNextFunctions(next_fns);
+        transpose_node->setInputTensors({std::make_shared<Tensor>(*this)});
+
+        result.setGradFn(transpose_node);
+        result.requiresGrad(true);
+    }
+
+    return result;
 }
 
 Tensor Tensor::permute(const std::vector<int>& dims) const {
@@ -662,10 +1487,29 @@ Tensor Tensor::permute(const std::vector<int>& dims) const {
         new_stride[i] = mStride[d];
     }
 
-    return Tensor(mStorage, new_shape, new_stride, mOffset);
+    Tensor result = Tensor(mStorage, new_shape, new_stride, mOffset);
+
+    // Autograd: attach backward function for permute
+    if (requiresGrad() && !autograd::NoGradMode::isEnabled()) {
+        auto permute_node = std::make_shared<autograd::PermuteBackward>(dims);
+
+        std::vector<std::shared_ptr<autograd::Node>> next_fns;
+        if (gradFn())
+            next_fns.push_back(gradFn());
+        permute_node->setNextFunctions(next_fns);
+        permute_node->setInputTensors({std::make_shared<Tensor>(*this)});
+
+        result.setGradFn(permute_node);
+        result.requiresGrad(true);
+    }
+
+    return result;
 }
 
 Tensor Tensor::slice(int dim, const size_t start, const size_t end) const {
+    // Save original dim for autograd before handling negative indexing
+    int original_dim = dim;
+
     // 1. Handle negative dim (like Python: -1 = last dim)
     if (dim < 0) {
         dim += static_cast<int>(mShape.size());
@@ -688,20 +1532,72 @@ Tensor Tensor::slice(int dim, const size_t start, const size_t end) const {
 
     // 5. Calculate new offset: mOffset + start * mStride[dim]
     size_t new_offset = mOffset + start * mStride[static_cast<size_t>(dim)];
-    // 6. Return new Tensor with same storage, new shape, same stride, new offset
-    return {mStorage, new_shape, new_stride, new_offset};
+
+    // 6. Create result tensor with same storage, new shape, same stride, new offset
+    Tensor result = Tensor(mStorage, new_shape, new_stride, new_offset);
+
+    // Autograd: attach backward function for slice
+    if (requiresGrad() && !autograd::NoGradMode::isEnabled()) {
+        auto slice_node =
+            std::make_shared<autograd::SliceBackward>(mShape, original_dim, start, end);
+
+        std::vector<std::shared_ptr<autograd::Node>> next_fns;
+        if (gradFn())
+            next_fns.push_back(gradFn());
+        slice_node->setNextFunctions(next_fns);
+        slice_node->setInputTensors({std::make_shared<Tensor>(*this)});
+
+        result.setGradFn(slice_node);
+        result.requiresGrad(true);
+    }
+
+    return result;
 }
 
 Tensor Tensor::sum() const {
-    // Sum all elements of the tensor
+    // Sum all visible elements in the tensor view (respects stride/offset)
     double sum = 0.0;
-    dispatchByDType(dtype(), mStorage->data().get(), mStorage->size(), [&](auto* ptr, size_t n) {
-        using T = std::remove_pointer_t<decltype(ptr)>;
+    size_t total_elements = numel();
+
+    dispatchByDType(dtype(), mStorage->data().get(), total_elements, [&](auto* ptr, size_t n) {
+        // Iterate through visible elements using multi-dimensional indexing
+        std::vector<size_t> indices(mShape.size(), 0);
         for (size_t i = 0; i < n; ++i) {
-            sum += static_cast<T>(ptr[i]);
+            // Calculate actual storage offset using strides
+            size_t offset = mOffset;
+            for (size_t dim = 0; dim < indices.size(); ++dim) {
+                offset += indices[dim] * mStride[dim];
+            }
+
+            sum += static_cast<double>(ptr[offset]);
+
+            // Increment multi-dimensional index (row-major order)
+            for (int dim = static_cast<int>(indices.size()) - 1; dim >= 0; --dim) {
+                indices[dim]++;
+                if (indices[dim] < mShape[dim]) {
+                    break;  // No carry needed
+                }
+                indices[dim] = 0;  // Carry to next dimension
+            }
         }
     });
-    return Tensor::full({1}, sum, dtype(), device());
+    Tensor result = Tensor::full({1}, sum, dtype(), device());
+
+    // Autograd: attach backward function for sum
+    if (requiresGrad() && !autograd::NoGradMode::isEnabled()) {
+        auto sum_node = std::make_shared<autograd::SumBackward>(mShape);
+
+        std::vector<std::shared_ptr<autograd::Node>> next_fns;
+        if (gradFn())
+            next_fns.push_back(gradFn());
+        sum_node->setNextFunctions(next_fns);
+        sum_node->setInputTensors({std::make_shared<Tensor>(*this)});
+
+        result.setGradFn(sum_node);
+        result.requiresGrad(true);
+    }
+
+    return result;
 }
 
 Tensor Tensor::sum(int dim, bool keepdim) const {
@@ -782,6 +1678,20 @@ Tensor Tensor::sum(int dim, bool keepdim) const {
                         }
                     });
 
+    // Autograd: attach backward function for sum
+    if (requiresGrad() && !autograd::NoGradMode::isEnabled()) {
+        auto sum_node = std::make_shared<autograd::SumBackward>(mShape);
+
+        std::vector<std::shared_ptr<autograd::Node>> next_fns;
+        if (gradFn())
+            next_fns.push_back(gradFn());
+        sum_node->setNextFunctions(next_fns);
+        sum_node->setInputTensors({std::make_shared<Tensor>(*this)});
+
+        result.setGradFn(sum_node);
+        result.requiresGrad(true);
+    }
+
     return result;
 }
 
@@ -790,13 +1700,49 @@ Tensor Tensor::sum(int dim, bool keepdim) const {
 // ============================================================================
 
 Tensor Tensor::mean() const {
+    // Compute mean of all visible elements in the tensor view (respects stride/offset)
     double total = 0.0;
-    dispatchByDType(dtype(), mStorage->data().get(), mStorage->size(), [&](auto* ptr, size_t n) {
+    size_t total_elements = numel();
+
+    dispatchByDType(dtype(), mStorage->data().get(), total_elements, [&](auto* ptr, size_t n) {
+        // Iterate through visible elements using multi-dimensional indexing
+        std::vector<size_t> indices(mShape.size(), 0);
         for (size_t i = 0; i < n; ++i) {
-            total += static_cast<double>(ptr[i]);
+            // Calculate actual storage offset using strides
+            size_t offset = mOffset;
+            for (size_t dim = 0; dim < indices.size(); ++dim) {
+                offset += indices[dim] * mStride[dim];
+            }
+
+            total += static_cast<double>(ptr[offset]);
+
+            // Increment multi-dimensional index
+            for (int dim = static_cast<int>(indices.size()) - 1; dim >= 0; --dim) {
+                indices[dim]++;
+                if (indices[dim] < mShape[dim]) {
+                    break;
+                }
+                indices[dim] = 0;
+            }
         }
     });
-    return Tensor::full({1}, total / static_cast<double>(numel()), dtype(), device());
+    Tensor result = Tensor::full({1}, total / static_cast<double>(numel()), dtype(), device());
+
+    // Autograd: attach backward function for mean
+    if (requiresGrad() && !autograd::NoGradMode::isEnabled()) {
+        auto mean_node = std::make_shared<autograd::MeanBackward>(mShape, numel());
+
+        std::vector<std::shared_ptr<autograd::Node>> next_fns;
+        if (gradFn())
+            next_fns.push_back(gradFn());
+        mean_node->setNextFunctions(next_fns);
+        mean_node->setInputTensors({std::make_shared<Tensor>(*this)});
+
+        result.setGradFn(mean_node);
+        result.requiresGrad(true);
+    }
+
+    return result;
 }
 
 Tensor Tensor::mean(int dim, bool keepdim) const {
@@ -868,7 +1814,356 @@ Tensor Tensor::mean(int dim, bool keepdim) const {
                         }
                     });
 
+    // Autograd: attach backward function for mean
+    if (requiresGrad() && !autograd::NoGradMode::isEnabled()) {
+        auto mean_node = std::make_shared<autograd::MeanBackward>(mShape, reduce_size);
+
+        std::vector<std::shared_ptr<autograd::Node>> next_fns;
+        if (gradFn())
+            next_fns.push_back(gradFn());
+        mean_node->setNextFunctions(next_fns);
+        mean_node->setInputTensors({std::make_shared<Tensor>(*this)});
+
+        result.setGradFn(mean_node);
+        result.requiresGrad(true);
+    }
+
     return result;
+}
+
+// ============================================================================
+// Activation Functions
+// ============================================================================
+
+Tensor Tensor::relu() const {
+    // ReLU: y = max(0, x) - element-wise
+    Tensor result = Tensor::zeros(mShape, dtype(), device());
+
+    // Apply ReLU to all elements
+    Tensor input_flat = contiguous().flatten();
+    Tensor result_flat = result.flatten();
+
+    auto input_acc = input_flat.accessor<float, 1>();
+    auto result_acc = result_flat.accessor<float, 1>();
+
+    size_t n = input_flat.numel();
+    for (size_t i = 0; i < n; ++i) {
+        result_acc[i] = input_acc[i] > 0.0f ? input_acc[i] : 0.0f;
+    }
+
+    // Autograd: attach backward function for ReLU
+    if (requiresGrad() && !autograd::NoGradMode::isEnabled()) {
+        auto relu_node = std::make_shared<autograd::ReLUBackward>(*this);
+
+        std::vector<std::shared_ptr<autograd::Node>> next_fns;
+        if (gradFn())
+            next_fns.push_back(gradFn());
+        relu_node->setNextFunctions(next_fns);
+        relu_node->setInputTensors({std::make_shared<Tensor>(*this)});
+
+        result.setGradFn(relu_node);
+        result.requiresGrad(true);
+    }
+
+    return result;
+}
+
+Tensor Tensor::sigmoid() const {
+    // Sigmoid: y = 1 / (1 + exp(-x)) - element-wise
+    // Numerical stability: for large |x|, use different formulas
+    //   If x >= 0:  sigmoid(x) = 1 / (1 + exp(-x))
+    //   If x < 0:   sigmoid(x) = exp(x) / (1 + exp(x))
+    Tensor result = Tensor::zeros(mShape, dtype(), device());
+
+    Tensor input_flat = contiguous().flatten();
+    Tensor result_flat = result.flatten();
+
+    auto input_acc = input_flat.accessor<float, 1>();
+    auto result_acc = result_flat.accessor<float, 1>();
+
+    size_t n = input_flat.numel();
+    for (size_t i = 0; i < n; ++i) {
+        float x = input_acc[i];
+        if (x >= 0.0f) {
+            result_acc[i] = 1.0f / (1.0f + std::exp(-x));
+        } else {
+            float exp_x = std::exp(x);
+            result_acc[i] = exp_x / (1.0f + exp_x);
+        }
+    }
+
+    // Autograd: attach backward function for Sigmoid
+    if (requiresGrad() && !autograd::NoGradMode::isEnabled()) {
+        auto sigmoid_node = std::make_shared<autograd::SigmoidBackward>(result);
+
+        std::vector<std::shared_ptr<autograd::Node>> next_fns;
+        if (gradFn())
+            next_fns.push_back(gradFn());
+        sigmoid_node->setNextFunctions(next_fns);
+        sigmoid_node->setInputTensors({std::make_shared<Tensor>(*this)});
+
+        result.setGradFn(sigmoid_node);
+        result.requiresGrad(true);
+    }
+
+    return result;
+}
+
+Tensor Tensor::tanh() const {
+    // Tanh: y = (exp(x) - exp(-x)) / (exp(x) + exp(-x)) - element-wise
+    // Using std::tanh for numerical stability
+    Tensor result = Tensor::zeros(mShape, dtype(), device());
+
+    Tensor input_flat = contiguous().flatten();
+    Tensor result_flat = result.flatten();
+
+    auto input_acc = input_flat.accessor<float, 1>();
+    auto result_acc = result_flat.accessor<float, 1>();
+
+    size_t n = input_flat.numel();
+    for (size_t i = 0; i < n; ++i) {
+        result_acc[i] = std::tanh(input_acc[i]);
+    }
+
+    // Autograd: attach backward function for Tanh
+    if (requiresGrad() && !autograd::NoGradMode::isEnabled()) {
+        auto tanh_node = std::make_shared<autograd::TanhBackward>(result);
+
+        std::vector<std::shared_ptr<autograd::Node>> next_fns;
+        if (gradFn())
+            next_fns.push_back(gradFn());
+        tanh_node->setNextFunctions(next_fns);
+        tanh_node->setInputTensors({std::make_shared<Tensor>(*this)});
+
+        result.setGradFn(tanh_node);
+        result.requiresGrad(true);
+    }
+
+    return result;
+}
+
+Tensor Tensor::softmax(int dim) const {
+    // Softmax: y_i = exp(x_i - max(x)) / sum(exp(x_j - max(x))) along dimension
+    // Using log-sum-exp trick for numerical stability
+
+    // Handle negative dimension indexing
+    int actual_dim = dim;
+    if (actual_dim < 0) {
+        actual_dim += static_cast<int>(ndim());
+    }
+
+    // Compute max along dimension (keepdim=true for broadcasting)
+    Tensor x_max = max(actual_dim, true);
+
+    // Subtract max for numerical stability: x_shifted = x - max(x)
+    Tensor x_shifted = *this - x_max;
+
+    // Compute exp(x_shifted)
+    Tensor exp_x = x_shifted.exp();
+
+    // Sum along dimension (keepdim=true for broadcasting)
+    Tensor exp_sum = exp_x.sum(actual_dim, true);
+
+    // Compute softmax: exp_x / exp_sum (broadcasting)
+    Tensor result = exp_x / exp_sum;
+
+    // Autograd: attach backward function for Softmax
+    if (requiresGrad() && !autograd::NoGradMode::isEnabled()) {
+        auto softmax_node = std::make_shared<autograd::SoftmaxBackward>(result, actual_dim);
+
+        std::vector<std::shared_ptr<autograd::Node>> next_fns;
+        if (gradFn())
+            next_fns.push_back(gradFn());
+        softmax_node->setNextFunctions(next_fns);
+        softmax_node->setInputTensors({std::make_shared<Tensor>(*this)});
+
+        result.setGradFn(softmax_node);
+        result.requiresGrad(true);
+    }
+
+    return result;
+}
+
+Tensor Tensor::logSoftmax(int dim) const {
+    // LogSoftmax: y_i = x_i - max(x) - log(sum(exp(x_j - max(x)))) along dimension
+    // More numerically stable than log(softmax(x))
+
+    // Handle negative dimension indexing
+    int actual_dim = dim;
+    if (actual_dim < 0) {
+        actual_dim += static_cast<int>(ndim());
+    }
+
+    // Compute max along dimension (keepdim=true for broadcasting)
+    Tensor x_max = max(actual_dim, true);
+
+    // Subtract max for numerical stability: x_shifted = x - max(x)
+    Tensor x_shifted = *this - x_max;
+
+    // Compute exp(x_shifted)
+    Tensor exp_x = x_shifted.exp();
+
+    // Sum along dimension (keepdim=true for broadcasting)
+    Tensor exp_sum = exp_x.sum(actual_dim, true);
+
+    // Compute log(sum(exp(x_shifted)))
+    Tensor log_sum_exp = exp_sum.log();
+
+    // Compute log_softmax: x_shifted - log_sum_exp
+    Tensor result = x_shifted - log_sum_exp;
+
+    // Autograd: attach backward function for LogSoftmax
+    if (requiresGrad() && !autograd::NoGradMode::isEnabled()) {
+        auto log_softmax_node = std::make_shared<autograd::LogSoftmaxBackward>(result, actual_dim);
+
+        std::vector<std::shared_ptr<autograd::Node>> next_fns;
+        if (gradFn())
+            next_fns.push_back(gradFn());
+        log_softmax_node->setNextFunctions(next_fns);
+        log_softmax_node->setInputTensors({std::make_shared<Tensor>(*this)});
+
+        result.setGradFn(log_softmax_node);
+        result.requiresGrad(true);
+    }
+
+    return result;
+}
+
+// ============================================================================
+// Element-wise Math Operations
+// ============================================================================
+
+Tensor Tensor::exp() const {
+    // Exp: y = e^x - element-wise
+    Tensor result = Tensor::zeros(mShape, dtype(), device());
+
+    // Apply exp to all elements
+    Tensor input_flat = contiguous().flatten();
+    Tensor result_flat = result.flatten();
+
+    auto input_acc = input_flat.accessor<float, 1>();
+    auto result_acc = result_flat.accessor<float, 1>();
+
+    size_t n = input_flat.numel();
+    for (size_t i = 0; i < n; ++i) {
+        result_acc[i] = std::exp(input_acc[i]);
+    }
+
+    // Autograd: attach backward function for exp
+    if (requiresGrad() && !autograd::NoGradMode::isEnabled()) {
+        auto exp_node = std::make_shared<autograd::ExpBackward>(result);
+
+        std::vector<std::shared_ptr<autograd::Node>> next_fns;
+        if (gradFn())
+            next_fns.push_back(gradFn());
+        exp_node->setNextFunctions(next_fns);
+        exp_node->setInputTensors({std::make_shared<Tensor>(*this)});
+
+        result.setGradFn(exp_node);
+        result.requiresGrad(true);
+    }
+
+    return result;
+}
+
+Tensor Tensor::log() const {
+    // Log: y = ln(x) - element-wise natural logarithm
+    Tensor result = Tensor::zeros(mShape, dtype(), device());
+
+    // Apply log to all elements
+    Tensor input_flat = contiguous().flatten();
+    Tensor result_flat = result.flatten();
+
+    auto input_acc = input_flat.accessor<float, 1>();
+    auto result_acc = result_flat.accessor<float, 1>();
+
+    size_t n = input_flat.numel();
+    for (size_t i = 0; i < n; ++i) {
+        result_acc[i] = std::log(input_acc[i]);
+    }
+
+    // Autograd: attach backward function for log
+    if (requiresGrad() && !autograd::NoGradMode::isEnabled()) {
+        auto log_node = std::make_shared<autograd::LogBackward>(*this);
+
+        std::vector<std::shared_ptr<autograd::Node>> next_fns;
+        if (gradFn())
+            next_fns.push_back(gradFn());
+        log_node->setNextFunctions(next_fns);
+        log_node->setInputTensors({std::make_shared<Tensor>(*this)});
+
+        result.setGradFn(log_node);
+        result.requiresGrad(true);
+    }
+
+    return result;
+}
+
+// ============================================================================
+// Variance Reductions
+// ============================================================================
+
+Tensor Tensor::var() const {
+    // Compute variance of visible elements: E[(X - μ)²] = E[X²] - μ²
+    // Using two-pass algorithm for numerical stability (respects stride/offset)
+    size_t total_elements = numel();
+
+    // First pass: compute mean
+    double mean_val = 0.0;
+    dispatchByDType(dtype(), mStorage->data().get(), total_elements, [&](auto* ptr, size_t n) {
+        std::vector<size_t> indices(mShape.size(), 0);
+        for (size_t i = 0; i < n; ++i) {
+            size_t offset = mOffset;
+            for (size_t dim = 0; dim < indices.size(); ++dim) {
+                offset += indices[dim] * mStride[dim];
+            }
+
+            mean_val += static_cast<double>(ptr[offset]);
+
+            for (int dim = static_cast<int>(indices.size()) - 1; dim >= 0; --dim) {
+                indices[dim]++;
+                if (indices[dim] < mShape[dim])
+                    break;
+                indices[dim] = 0;
+            }
+        }
+    });
+    mean_val /= static_cast<double>(total_elements);
+
+    // Second pass: compute mean of squared deviations
+    double var_val = 0.0;
+    dispatchByDType(dtype(), mStorage->data().get(), total_elements, [&](auto* ptr, size_t n) {
+        std::vector<size_t> indices(mShape.size(), 0);
+        for (size_t i = 0; i < n; ++i) {
+            size_t offset = mOffset;
+            for (size_t dim = 0; dim < indices.size(); ++dim) {
+                offset += indices[dim] * mStride[dim];
+            }
+
+            double diff = static_cast<double>(ptr[offset]) - mean_val;
+            var_val += diff * diff;
+
+            for (int dim = static_cast<int>(indices.size()) - 1; dim >= 0; --dim) {
+                indices[dim]++;
+                if (indices[dim] < mShape[dim])
+                    break;
+                indices[dim] = 0;
+            }
+        }
+    });
+    var_val /= static_cast<double>(total_elements);
+
+    return Tensor::full({1}, var_val, dtype(), device());
+}
+
+Tensor Tensor::var(int dim, bool keepdim) const {
+    // For now, compute using tensor operations: ((x - mean) ** 2).mean(dim)
+    // This is less efficient but reuses existing code
+
+    Tensor mean_val = mean(dim, true);  // keepdim=true for broadcasting
+    Tensor centered = *this - mean_val;
+    Tensor squared = centered * centered;
+    return squared.mean(dim, keepdim);
 }
 
 // ============================================================================
@@ -876,15 +2171,53 @@ Tensor Tensor::mean(int dim, bool keepdim) const {
 // ============================================================================
 
 Tensor Tensor::max() const {
+    // Find maximum of visible elements in the tensor view (respects stride/offset)
     double max_val = std::numeric_limits<double>::lowest();
-    dispatchByDType(dtype(), mStorage->data().get(), mStorage->size(), [&](auto* ptr, size_t n) {
+    size_t total_elements = numel();
+
+    dispatchByDType(dtype(), mStorage->data().get(), total_elements, [&](auto* ptr, size_t n) {
+        // Iterate through visible elements using multi-dimensional indexing
+        std::vector<size_t> indices(mShape.size(), 0);
         for (size_t i = 0; i < n; ++i) {
-            double val = static_cast<double>(ptr[i]);
+            // Calculate actual storage offset using strides
+            size_t offset = mOffset;
+            for (size_t dim = 0; dim < indices.size(); ++dim) {
+                offset += indices[dim] * mStride[dim];
+            }
+
+            double val = static_cast<double>(ptr[offset]);
             if (val > max_val)
                 max_val = val;
+
+            // Increment multi-dimensional index
+            for (int dim = static_cast<int>(indices.size()) - 1; dim >= 0; --dim) {
+                indices[dim]++;
+                if (indices[dim] < mShape[dim]) {
+                    break;
+                }
+                indices[dim] = 0;
+            }
         }
     });
-    return Tensor::full({1}, max_val, dtype(), device());
+    Tensor result = Tensor::full({1}, max_val, dtype(), device());
+
+    // Attach autograd node if input requires gradients
+    // For global max, treat it as max along all dimensions (flattened)
+    if (requiresGrad() && !autograd::NoGradMode::isEnabled()) {
+        auto max_node = std::make_shared<autograd::MaxBackward>(this->contiguous().flatten(),
+                                                                result, -1, false);
+
+        std::vector<std::shared_ptr<autograd::Node>> next_fns;
+        if (gradFn())
+            next_fns.push_back(gradFn());
+        max_node->setNextFunctions(next_fns);
+        max_node->setInputTensors({std::make_shared<Tensor>(*this)});
+
+        result.setGradFn(max_node);
+        result.requiresGrad(true);
+    }
+
+    return result;
 }
 
 Tensor Tensor::max(int dim, bool keepdim) const {
@@ -958,6 +2291,20 @@ Tensor Tensor::max(int dim, bool keepdim) const {
                         }
                     });
 
+    // Attach autograd node if input requires gradients
+    if (requiresGrad() && !autograd::NoGradMode::isEnabled()) {
+        auto max_node = std::make_shared<autograd::MaxBackward>(*this, result, dim, keepdim);
+
+        std::vector<std::shared_ptr<autograd::Node>> next_fns;
+        if (gradFn())
+            next_fns.push_back(gradFn());
+        max_node->setNextFunctions(next_fns);
+        max_node->setInputTensors({std::make_shared<Tensor>(*this)});
+
+        result.setGradFn(max_node);
+        result.requiresGrad(true);
+    }
+
     return result;
 }
 
@@ -966,15 +2313,53 @@ Tensor Tensor::max(int dim, bool keepdim) const {
 // ============================================================================
 
 Tensor Tensor::min() const {
+    // Find minimum of visible elements in the tensor view (respects stride/offset)
     double min_val = std::numeric_limits<double>::max();
-    dispatchByDType(dtype(), mStorage->data().get(), mStorage->size(), [&](auto* ptr, size_t n) {
+    size_t total_elements = numel();
+
+    dispatchByDType(dtype(), mStorage->data().get(), total_elements, [&](auto* ptr, size_t n) {
+        // Iterate through visible elements using multi-dimensional indexing
+        std::vector<size_t> indices(mShape.size(), 0);
         for (size_t i = 0; i < n; ++i) {
-            double val = static_cast<double>(ptr[i]);
+            // Calculate actual storage offset using strides
+            size_t offset = mOffset;
+            for (size_t dim = 0; dim < indices.size(); ++dim) {
+                offset += indices[dim] * mStride[dim];
+            }
+
+            double val = static_cast<double>(ptr[offset]);
             if (val < min_val)
                 min_val = val;
+
+            // Increment multi-dimensional index
+            for (int dim = static_cast<int>(indices.size()) - 1; dim >= 0; --dim) {
+                indices[dim]++;
+                if (indices[dim] < mShape[dim]) {
+                    break;
+                }
+                indices[dim] = 0;
+            }
         }
     });
-    return Tensor::full({1}, min_val, dtype(), device());
+    Tensor result = Tensor::full({1}, min_val, dtype(), device());
+
+    // Autograd: attach backward function for min (Note: scalar min picks arbitrary element)
+    // Min of all elements doesn't have a well-defined gradient for all inputs,
+    // only for the minimum value position. We use MinBackward with dim=-1 to handle this.
+    if (requiresGrad() && !autograd::NoGradMode::isEnabled()) {
+        auto min_node = std::make_shared<autograd::MinBackward>(*this, result, -1, true);
+
+        std::vector<std::shared_ptr<autograd::Node>> next_fns;
+        if (gradFn())
+            next_fns.push_back(gradFn());
+        min_node->setNextFunctions(next_fns);
+        min_node->setInputTensors({std::make_shared<Tensor>(*this)});
+
+        result.setGradFn(min_node);
+        result.requiresGrad(true);
+    }
+
+    return result;
 }
 
 Tensor Tensor::min(int dim, bool keepdim) const {
@@ -1048,6 +2433,20 @@ Tensor Tensor::min(int dim, bool keepdim) const {
                         }
                     });
 
+    // Autograd: attach backward function for min
+    if (requiresGrad() && !autograd::NoGradMode::isEnabled()) {
+        auto min_node = std::make_shared<autograd::MinBackward>(*this, result, dim, keepdim);
+
+        std::vector<std::shared_ptr<autograd::Node>> next_fns;
+        if (gradFn())
+            next_fns.push_back(gradFn());
+        min_node->setNextFunctions(next_fns);
+        min_node->setInputTensors({std::make_shared<Tensor>(*this)});
+
+        result.setGradFn(min_node);
+        result.requiresGrad(true);
+    }
+
     return result;
 }
 
@@ -1063,16 +2462,46 @@ Tensor Tensor::dot(const Tensor& other) const {
         throw std::runtime_error("Dot product requires matching sizes");
     }
 
+    // Dot product respecting stride/offset for 1D tensors
     double result = 0.0;
-    dispatchByDType(dtype(), mStorage->data().get(), mStorage->size(), [&](auto* ptr, size_t n) {
+    size_t n = mShape[0];
+
+    dispatchByDType(dtype(), mStorage->data().get(), n, [&](auto* ptr, size_t) {
         using T = std::remove_pointer_t<decltype(ptr)>;
         const T* other_ptr = static_cast<const T*>(other.mStorage->data().get());
+
+        // Use strides to access elements (handles views like slices)
+        size_t stride_a = mStride[0];
+        size_t stride_b = other.mStride[0];
+        size_t offset_a = mOffset;
+        size_t offset_b = other.mOffset;
+
         for (size_t i = 0; i < n; ++i) {
-            result += static_cast<double>(ptr[i]) * static_cast<double>(other_ptr[i]);
+            result += static_cast<double>(ptr[offset_a + i * stride_a]) *
+                      static_cast<double>(other_ptr[offset_b + i * stride_b]);
         }
     });
 
-    return Tensor::full({1}, result, dtype(), device());
+    Tensor output = Tensor::full({1}, result, dtype(), device());
+
+    // Autograd: attach backward function for dot product
+    if ((requiresGrad() || other.requiresGrad()) && !autograd::NoGradMode::isEnabled()) {
+        auto dot_node = std::make_shared<autograd::DotBackward>(*this, other);
+
+        std::vector<std::shared_ptr<autograd::Node>> next_fns;
+        if (gradFn())
+            next_fns.push_back(gradFn());
+        if (other.gradFn())
+            next_fns.push_back(other.gradFn());
+        dot_node->setNextFunctions(next_fns);
+        dot_node->setInputTensors(
+            {std::make_shared<Tensor>(*this), std::make_shared<Tensor>(other)});
+
+        output.setGradFn(dot_node);
+        output.requiresGrad(true);
+    }
+
+    return output;
 }
 
 Tensor Tensor::matmul(const Tensor& other) const {
@@ -1102,24 +2531,148 @@ Tensor Tensor::matmul(const Tensor& other) const {
     Tensor result = Tensor::zeros({M, N}, dtype(), device());
 
     // 5. Compute: triple nested loop (naïve O(M×N×K) implementation)
+    // Uses strides to support non-contiguous tensors (e.g., transposed views)
     dispatchByDType(dtype(), result.mStorage->data().get(), M * N, [&](auto* c_ptr, size_t) {
         using T = std::remove_pointer_t<decltype(c_ptr)>;
-        const T* a_ptr = static_cast<const T*>(mStorage->data().get());
-        const T* b_ptr = static_cast<const T*>(other.mStorage->data().get());
+        const T* a_ptr = static_cast<const T*>(mStorage->data().get()) + mOffset;
+        const T* b_ptr = static_cast<const T*>(other.mStorage->data().get()) + other.mOffset;
+
+        // Get strides for proper indexing (handles transposed/non-contiguous tensors)
+        const size_t a_stride0 = mStride[0];
+        const size_t a_stride1 = mStride[1];
+        const size_t b_stride0 = other.mStride[0];
+        const size_t b_stride1 = other.mStride[1];
 
         for (size_t i = 0; i < M; ++i) {
             for (size_t j = 0; j < N; ++j) {
                 T sum = 0;
                 for (size_t k = 0; k < K; ++k) {
-                    // A[i,k] × B[k,j]
-                    sum += a_ptr[i * K + k] * b_ptr[k * N + j];
+                    // A[i,k] × B[k,j] using strides
+                    sum +=
+                        a_ptr[i * a_stride0 + k * a_stride1] * b_ptr[k * b_stride0 + j * b_stride1];
                 }
                 c_ptr[i * N + j] = sum;
             }
         }
     });
 
+    // AUTOGRAD: Attach backward function for matmul
+    if ((requiresGrad() || other.requiresGrad()) && !autograd::NoGradMode::isEnabled()) {
+        // Create MatmulBackward node
+        auto matmul_node = std::make_shared<autograd::MatmulBackward>(*this, other);
+
+        // Set up next_functions (predecessor nodes for graph traversal)
+        std::vector<std::shared_ptr<autograd::Node>> next_fns;
+        if (gradFn())
+            next_fns.push_back(gradFn());
+        if (other.gradFn())
+            next_fns.push_back(other.gradFn());
+        matmul_node->setNextFunctions(next_fns);
+
+        // Set up inputTensors (for gradient accumulation)
+        matmul_node->setInputTensors(
+            {std::make_shared<Tensor>(*this), std::make_shared<Tensor>(other)});
+
+        // Attach to result
+        result.setGradFn(matmul_node);
+        result.requiresGrad(true);
+    }
+
     return result;
+}
+
+// ============================================================================
+// Autograd Methods
+// ============================================================================
+
+Tensor& Tensor::requiresGrad(bool requires_grad) {
+    if (requires_grad) {
+        if (!mAutogradMeta) {
+            mAutogradMeta = std::make_shared<autograd::AutogradMeta>();
+        }
+        mAutogradMeta->requiresGrad = true;
+    } else {
+        if (mAutogradMeta) {
+            mAutogradMeta->requiresGrad = false;
+        }
+    }
+    return *this;
+}
+
+bool Tensor::requiresGrad() const {
+    if (!mAutogradMeta) {
+        return false;
+    }
+    return mAutogradMeta->requiresGrad;
+}
+
+bool Tensor::isLeaf() const {
+    if (!mAutogradMeta) {
+        return true;
+    }
+    return mAutogradMeta->isLeaf;
+}
+
+std::shared_ptr<Tensor> Tensor::grad() const {
+    if (!mAutogradMeta) {
+        return nullptr;
+    }
+    return mAutogradMeta->grad;
+}
+
+void Tensor::zeroGrad() {
+    if (!mAutogradMeta || mAutogradMeta->grad == nullptr) {
+        return;
+    }
+    mAutogradMeta->grad->zero();
+}
+
+void Tensor::setGradFn(std::shared_ptr<loom::autograd::Node> grad_fn) {
+    if (!mAutogradMeta) {
+        requiresGrad(true);
+    }
+    mAutogradMeta->gradFn = grad_fn;
+    mAutogradMeta->isLeaf = false;
+    return;
+}
+
+std::shared_ptr<loom::autograd::Node> Tensor::gradFn() const {
+    if (!mAutogradMeta) {
+        return nullptr;
+    }
+    return mAutogradMeta->gradFn;
+}
+
+uint64_t Tensor::version() const {
+    if (!mAutogradMeta) {
+        return 0;  // No autograd metadata, version doesn't matter
+    }
+    return mAutogradMeta->version;
+}
+
+void Tensor::bumpVersion() {
+    if (mAutogradMeta) {
+        mAutogradMeta->version++;
+    }
+}
+
+void Tensor::accumulateGrad(const Tensor& g) {
+    // Lazy initialize autograd metadata if needed
+    if (!mAutogradMeta) {
+        mAutogradMeta = std::make_shared<autograd::AutogradMeta>();
+    }
+
+    // Initialize gradient tensor on first accumulation
+    if (!mAutogradMeta->grad) {
+        mAutogradMeta->grad = std::make_shared<Tensor>(Tensor::zeros(mShape, dtype(), device()));
+    }
+
+    // Accumulate gradient (supports multiple backward paths)
+    *mAutogradMeta->grad += g;
+}
+
+void Tensor::backward(const Tensor& grad) {
+    autograd::Engine::backward(*this, grad);
 }
 
 // ============================================================================

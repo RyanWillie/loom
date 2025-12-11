@@ -10,9 +10,9 @@
  * Add your own benchmarks here following the pattern below.
  */
 
-#include "common/device.h"
-#include "cpu/basic_allocator.h"
-#include "cpu/pooling_allocator.h"
+#include "loom/device.h"
+#include "loom/memory/basic_allocator.h"
+#include "loom/memory/pooling_allocator.h"
 #include <benchmark/benchmark.h>
 
 using namespace loom;

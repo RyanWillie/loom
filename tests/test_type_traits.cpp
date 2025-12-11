@@ -1,5 +1,5 @@
-#include "common/dtypes.h"
-#include "common/type_traits.h"
+#include "loom/dtypes.h"
+#include "loom/type_traits.h"
 #include <gtest/gtest.h>
 
 using namespace loom;

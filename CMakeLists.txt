@@ -19,6 +19,12 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     add_compile_options(-Wall -Wextra -Wpedantic)
 endif()
 
+# GCC may emit noisy psABI notes (e.g. GCC 10+ C++17 pair passing changes).
+# Silence them to keep build output clean.
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    add_compile_options(-Wno-psabi)
+endif()
+
 # --- Debug Symbols ---
 if(CMAKE_BUILD_TYPE STREQUAL "Debug" OR CMAKE_BUILD_TYPE STREQUAL "RelWithDebInfo")
     add_compile_options(-g)
@@ -108,6 +114,9 @@ if(ENABLE_COVERAGE)
                 --directory .
                 --capture
                 --output-file ${CMAKE_BINARY_DIR}/coverage/coverage.info
+                --ignore-errors inconsistent,negative,count,usage
+                --rc geninfo_unexecuted_blocks=0
+                --rc max_message_count=1000
                 --quiet
 
             # Remove coverage from external dependencies (googletest, etc.)
@@ -121,6 +130,8 @@ if(ENABLE_COVERAGE)
                 '*/tests/*'
                 '*/benchmarks/*'
                 --output-file ${CMAKE_BINARY_DIR}/coverage/coverage_filtered.info
+                --ignore-errors inconsistent,negative,count,usage,unused
+                --rc geninfo_unexecuted_blocks=0
                 --quiet
 
             # Generate HTML report
@@ -198,17 +209,30 @@ else()
     set(GPU_SOURCES "")
 endif()
 
-# --- Main Executable ---
-add_executable(loom src/main.cpp ${COMMON_SOURCES} ${CPU_SOURCES} ${GPU_SOURCES})
+# --- Loom Library ---
+add_library(loom SHARED ${COMMON_SOURCES} ${CPU_SOURCES} ${GPU_SOURCES})
+
+# Public include directory (users will include <loom/...>)
+target_include_directories(loom
+    PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+        $<INSTALL_INTERFACE:include>
+)
 
 if(CMAKE_CUDA_COMPILER)
-    set_target_properties(loom PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+    set_target_properties(loom PROPERTIES
+        CUDA_SEPARABLE_COMPILATION ON
+        POSITION_INDEPENDENT_CODE ON
+    )
 endif()
 
 # Apply clang-tidy only to our targets, not dependencies
 if(ENABLE_CLANG_TIDY AND CLANG_TIDY_COMMAND)
     set_target_properties(loom PROPERTIES CXX_CLANG_TIDY "${CLANG_TIDY_COMMAND}")
 endif()
+
+# --- Examples ---
+add_subdirectory(examples)
 
 # --- Tests ---
 enable_testing()
