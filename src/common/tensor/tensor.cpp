@@ -14,6 +14,7 @@
 #include "loom/autograd/nodes/reduction_ops.h"
 #include "loom/autograd/nodes/view_ops.h"
 #include "loom/logger.h"
+#include "loom/tensor/tensor_iterator.h"
 
 namespace loom {
 
@@ -54,7 +55,26 @@ Tensor Tensor::zeros(const std::vector<size_t>& shape, const loom::DType dtype,
 }
 
 Tensor& Tensor::zero() {
-    std::memset(mStorage->data().get(), 0, mStorage->sizeInBytes());
+    const size_t n = numel();
+    if (n == 0) {
+        return *this;
+    }
+
+    // Fast path: row-major contiguous view can be memset starting at the view base.
+    if (isContiguous()) {
+        auto* base = static_cast<unsigned char*>(mStorage->data().get());
+        std::memset(base + mOffset * sizeOf(dtype()), 0, n * sizeOf(dtype()));
+    } else {
+        dispatchByDType(dtype(), mStorage->data().get(), mStorage->size(),
+                        [&](auto* base, size_t) {
+                            using T = std::remove_pointer_t<decltype(base)>;
+                            TensorIterator it(mShape, mStride, mOffset);
+                            while (it.hasNext()) {
+                                base[it.offset()] = static_cast<T>(0);
+                                it.next();
+                            }
+                        });
+    }
 
     // Increment version for in-place operation detection
     bumpVersion();
@@ -71,12 +91,19 @@ Tensor Tensor::ones(const std::vector<size_t>& shape, const loom::DType dtype,
 }
 
 Tensor& Tensor::one() {
-    loom::DType dt = dtype();
-    size_t num_elements = mStorage->size();
+    const size_t n = numel();
+    if (n == 0) {
+        return *this;
+    }
 
-    dispatchByDType(dt, mStorage->data().get(), num_elements, [](auto* data, size_t size) {
-        using T = std::remove_pointer_t<decltype(data)>;
-        std::fill_n(data, size, static_cast<T>(1));
+    dispatchByDType(dtype(), mStorage->data().get(), mStorage->size(), [&](auto* base, size_t) {
+        using T = std::remove_pointer_t<decltype(base)>;
+        if (isContiguous()) {
+            std::fill_n(base + mOffset, n, static_cast<T>(1));
+        } else {
+            forEachOffset(mShape, mStride, mOffset,
+                          [&](size_t off) { base[off] = static_cast<T>(1); });
+        }
     });
 
     // Increment version for in-place operation detection
@@ -97,10 +124,21 @@ Tensor& Tensor::rand() {
     auto& gen = getRandomEngine();
     std::uniform_real_distribution<double> dis(0.0, 1.0);
 
-    dispatchByDType(dtype(), mStorage->data().get(), mStorage->size(), [&](auto* ptr, size_t n) {
-        using T = std::remove_pointer_t<decltype(ptr)>;
-        for (size_t i = 0; i < n; ++i) {
-            ptr[i] = static_cast<T>(dis(gen));
+    const size_t n = numel();
+    if (n == 0) {
+        return *this;
+    }
+
+    dispatchByDType(dtype(), mStorage->data().get(), mStorage->size(), [&](auto* base, size_t) {
+        using T = std::remove_pointer_t<decltype(base)>;
+        if (isContiguous()) {
+            T* ptr = base + mOffset;
+            for (size_t i = 0; i < n; ++i) {
+                ptr[i] = static_cast<T>(dis(gen));
+            }
+        } else {
+            forEachOffset(mShape, mStride, mOffset,
+                          [&](size_t off) { base[off] = static_cast<T>(dis(gen)); });
         }
     });
 
@@ -122,10 +160,21 @@ Tensor& Tensor::randn() {
     auto& gen = getRandomEngine();
     std::normal_distribution<double> dis(0.0, 1.0);
 
-    dispatchByDType(dtype(), mStorage->data().get(), mStorage->size(), [&](auto* ptr, size_t n) {
-        using T = std::remove_pointer_t<decltype(ptr)>;
-        for (size_t i = 0; i < n; ++i) {
-            ptr[i] = static_cast<T>(dis(gen));
+    const size_t n = numel();
+    if (n == 0) {
+        return *this;
+    }
+
+    dispatchByDType(dtype(), mStorage->data().get(), mStorage->size(), [&](auto* base, size_t) {
+        using T = std::remove_pointer_t<decltype(base)>;
+        if (isContiguous()) {
+            T* ptr = base + mOffset;
+            for (size_t i = 0; i < n; ++i) {
+                ptr[i] = static_cast<T>(dis(gen));
+            }
+        } else {
+            forEachOffset(mShape, mStride, mOffset,
+                          [&](size_t off) { base[off] = static_cast<T>(dis(gen)); });
         }
     });
 
@@ -139,10 +188,21 @@ Tensor& Tensor::uniform(const double min, const double max) {
     auto& gen = getRandomEngine();
     std::uniform_real_distribution<double> dis(min, max);
 
-    dispatchByDType(dtype(), mStorage->data().get(), mStorage->size(), [&](auto* ptr, size_t n) {
-        using T = std::remove_pointer_t<decltype(ptr)>;
-        for (size_t i = 0; i < n; ++i) {
-            ptr[i] = static_cast<T>(dis(gen));
+    const size_t n = numel();
+    if (n == 0) {
+        return *this;
+    }
+
+    dispatchByDType(dtype(), mStorage->data().get(), mStorage->size(), [&](auto* base, size_t) {
+        using T = std::remove_pointer_t<decltype(base)>;
+        if (isContiguous()) {
+            T* ptr = base + mOffset;
+            for (size_t i = 0; i < n; ++i) {
+                ptr[i] = static_cast<T>(dis(gen));
+            }
+        } else {
+            forEachOffset(mShape, mStride, mOffset,
+                          [&](size_t off) { base[off] = static_cast<T>(dis(gen)); });
         }
     });
 
@@ -161,9 +221,19 @@ Tensor Tensor::full(const std::vector<size_t>& shape, const double value, const 
 }
 
 Tensor& Tensor::fill(const double value) {
-    dispatchByDType(dtype(), mStorage->data().get(), mStorage->size(), [&](auto* ptr, size_t n) {
-        using T = std::remove_pointer_t<decltype(ptr)>;
-        std::fill_n(ptr, n, static_cast<T>(value));
+    const size_t n = numel();
+    if (n == 0) {
+        return *this;
+    }
+
+    dispatchByDType(dtype(), mStorage->data().get(), mStorage->size(), [&](auto* base, size_t) {
+        using T = std::remove_pointer_t<decltype(base)>;
+        const T v = static_cast<T>(value);
+        if (isContiguous()) {
+            std::fill_n(base + mOffset, n, v);
+        } else {
+            forEachOffset(mShape, mStride, mOffset, [&](size_t off) { base[off] = v; });
+        }
     });
 
     // Increment version for in-place operation detection
@@ -173,8 +243,28 @@ Tensor& Tensor::fill(const double value) {
 }
 
 Tensor Tensor::clone() const {
-    Storage storage = mStorage->clone();
-    return {std::make_shared<Storage>(storage), mShape, mStride, mOffset};
+    // Deep copy of the *logical tensor* (respects shape/stride/offset), not the entire storage.
+    Tensor result(mShape, dtype(), device());
+    const size_t n = numel();
+    if (n == 0) {
+        return result;
+    }
+
+    dispatchByDType(dtype(), result.mStorage->data().get(), result.mStorage->size(),
+                    [&](auto* dst_base, size_t) {
+                        using T = std::remove_pointer_t<decltype(dst_base)>;
+                        const T* src_base = static_cast<const T*>(mStorage->data().get());
+
+                        if (isContiguous()) {
+                            std::memcpy(dst_base, src_base + mOffset, n * sizeof(T));
+                            return;
+                        }
+
+                        size_t di = 0;
+                        forEachOffset(mShape, mStride, mOffset,
+                                      [&](size_t off) { dst_base[di++] = src_base[off]; });
+                    });
+    return result;
 }
 
 std::vector<size_t> Tensor::calculateStride(const std::vector<size_t>& shape) {
@@ -297,11 +387,10 @@ bool Tensor::isContiguous() const {
         return true;
     }
 
-    // A tensor is contiguous if:
-    // 1. Offset is 0 (starts at beginning of storage)
-    // 2. Strides match row-major layout
+    // A tensor is contiguous (row-major) if strides match the canonical row-major layout.
+    // Note: offset does NOT affect contiguity; it only changes the base element.
     std::vector<size_t> expectedStride = calculateStride(mShape);
-    return mOffset == 0 && mStride == expectedStride;
+    return mStride == expectedStride;
 }
 
 double Tensor::item() const {
@@ -373,10 +462,46 @@ Tensor Tensor::toDevice(const Device& device) const {
 }
 
 Tensor Tensor::operator+(const Tensor& other) const {
-    // Forward pass - compute the result
-    Tensor result = (mShape == other.mShape)
-                        ? (clone() += other)
-                        : broadcastOp(other, [](auto a, auto b) { return a + b; });
+    if (other.dtype() != dtype()) {
+        throw std::runtime_error("DType mismatch for addition");
+    }
+
+    // Forward pass - compute the result (stride-aware; never mutates inputs)
+    Tensor result = [&]() {
+        if (mShape != other.mShape) {
+            return broadcastOp(other, [](auto a, auto b) { return a + b; });
+        }
+
+        Tensor out = Tensor::zeros(mShape, dtype(), device());
+        const size_t n = out.numel();
+        if (n == 0) {
+            return out;
+        }
+
+        dispatchByDType(dtype(), out.mStorage->data().get(), out.mStorage->size(),
+                        [&](auto* out_base, size_t) {
+                            using T = std::remove_pointer_t<decltype(out_base)>;
+                            const T* a_base = static_cast<const T*>(mStorage->data().get());
+                            const T* b_base = static_cast<const T*>(other.mStorage->data().get());
+
+                            if (isContiguous() && other.isContiguous()) {
+                                const T* ap = a_base + mOffset;
+                                const T* bp = b_base + other.mOffset;
+                                for (size_t i = 0; i < n; ++i) {
+                                    out_base[i] = ap[i] + bp[i];
+                                }
+                                return;
+                            }
+
+                            size_t di = 0;
+                            forEachOffset2(mShape, mStride, mOffset, other.mStride, other.mOffset,
+                                           [&](size_t ao, size_t bo) {
+                                               out_base[di++] = a_base[ao] + b_base[bo];
+                                           });
+                        });
+
+        return out;
+    }();
 
     if ((!requiresGrad() && !other.requiresGrad()) || autograd::NoGradMode::isEnabled()) {
         return result;
@@ -399,10 +524,46 @@ Tensor Tensor::operator+(const Tensor& other) const {
 }
 
 Tensor Tensor::operator-(const Tensor& other) const {
-    // Forward pass - compute the result
-    Tensor result = (mShape == other.mShape)
-                        ? clone() -= other
-                        : broadcastOp(other, [](auto a, auto b) { return a - b; });
+    if (other.dtype() != dtype()) {
+        throw std::runtime_error("DType mismatch for subtraction");
+    }
+
+    // Forward pass - compute the result (stride-aware; never mutates inputs)
+    Tensor result = [&]() {
+        if (mShape != other.mShape) {
+            return broadcastOp(other, [](auto a, auto b) { return a - b; });
+        }
+
+        Tensor out = Tensor::zeros(mShape, dtype(), device());
+        const size_t n = out.numel();
+        if (n == 0) {
+            return out;
+        }
+
+        dispatchByDType(dtype(), out.mStorage->data().get(), out.mStorage->size(),
+                        [&](auto* out_base, size_t) {
+                            using T = std::remove_pointer_t<decltype(out_base)>;
+                            const T* a_base = static_cast<const T*>(mStorage->data().get());
+                            const T* b_base = static_cast<const T*>(other.mStorage->data().get());
+
+                            if (isContiguous() && other.isContiguous()) {
+                                const T* ap = a_base + mOffset;
+                                const T* bp = b_base + other.mOffset;
+                                for (size_t i = 0; i < n; ++i) {
+                                    out_base[i] = ap[i] - bp[i];
+                                }
+                                return;
+                            }
+
+                            size_t di = 0;
+                            forEachOffset2(mShape, mStride, mOffset, other.mStride, other.mOffset,
+                                           [&](size_t ao, size_t bo) {
+                                               out_base[di++] = a_base[ao] - b_base[bo];
+                                           });
+                        });
+
+        return out;
+    }();
 
     if ((!requiresGrad() && !other.requiresGrad()) || autograd::NoGradMode::isEnabled()) {
         return result;
@@ -425,10 +586,46 @@ Tensor Tensor::operator-(const Tensor& other) const {
 }
 
 Tensor Tensor::operator*(const Tensor& other) const {
-    // Forward pass - compute the result
-    Tensor result = (mShape == other.mShape)
-                        ? clone() *= other
-                        : broadcastOp(other, [](auto a, auto b) { return a * b; });
+    if (other.dtype() != dtype()) {
+        throw std::runtime_error("DType mismatch for multiplication");
+    }
+
+    // Forward pass - compute the result (stride-aware; never mutates inputs)
+    Tensor result = [&]() {
+        if (mShape != other.mShape) {
+            return broadcastOp(other, [](auto a, auto b) { return a * b; });
+        }
+
+        Tensor out = Tensor::zeros(mShape, dtype(), device());
+        const size_t n = out.numel();
+        if (n == 0) {
+            return out;
+        }
+
+        dispatchByDType(dtype(), out.mStorage->data().get(), out.mStorage->size(),
+                        [&](auto* out_base, size_t) {
+                            using T = std::remove_pointer_t<decltype(out_base)>;
+                            const T* a_base = static_cast<const T*>(mStorage->data().get());
+                            const T* b_base = static_cast<const T*>(other.mStorage->data().get());
+
+                            if (isContiguous() && other.isContiguous()) {
+                                const T* ap = a_base + mOffset;
+                                const T* bp = b_base + other.mOffset;
+                                for (size_t i = 0; i < n; ++i) {
+                                    out_base[i] = ap[i] * bp[i];
+                                }
+                                return;
+                            }
+
+                            size_t di = 0;
+                            forEachOffset2(mShape, mStride, mOffset, other.mStride, other.mOffset,
+                                           [&](size_t ao, size_t bo) {
+                                               out_base[di++] = a_base[ao] * b_base[bo];
+                                           });
+                        });
+
+        return out;
+    }();
 
     if ((!requiresGrad() && !other.requiresGrad()) || autograd::NoGradMode::isEnabled()) {
         return result;
@@ -451,10 +648,46 @@ Tensor Tensor::operator*(const Tensor& other) const {
 }
 
 Tensor Tensor::operator/(const Tensor& other) const {
-    // Forward pass - compute the result
-    Tensor result = (mShape == other.mShape)
-                        ? clone() /= other
-                        : broadcastOp(other, [](auto a, auto b) { return a / b; });
+    if (other.dtype() != dtype()) {
+        throw std::runtime_error("DType mismatch for division");
+    }
+
+    // Forward pass - compute the result (stride-aware; never mutates inputs)
+    Tensor result = [&]() {
+        if (mShape != other.mShape) {
+            return broadcastOp(other, [](auto a, auto b) { return a / b; });
+        }
+
+        Tensor out = Tensor::zeros(mShape, dtype(), device());
+        const size_t n = out.numel();
+        if (n == 0) {
+            return out;
+        }
+
+        dispatchByDType(dtype(), out.mStorage->data().get(), out.mStorage->size(),
+                        [&](auto* out_base, size_t) {
+                            using T = std::remove_pointer_t<decltype(out_base)>;
+                            const T* a_base = static_cast<const T*>(mStorage->data().get());
+                            const T* b_base = static_cast<const T*>(other.mStorage->data().get());
+
+                            if (isContiguous() && other.isContiguous()) {
+                                const T* ap = a_base + mOffset;
+                                const T* bp = b_base + other.mOffset;
+                                for (size_t i = 0; i < n; ++i) {
+                                    out_base[i] = ap[i] / bp[i];
+                                }
+                                return;
+                            }
+
+                            size_t di = 0;
+                            forEachOffset2(mShape, mStride, mOffset, other.mStride, other.mOffset,
+                                           [&](size_t ao, size_t bo) {
+                                               out_base[di++] = a_base[ao] / b_base[bo];
+                                           });
+                        });
+
+        return out;
+    }();
 
     if ((!requiresGrad() && !other.requiresGrad()) || autograd::NoGradMode::isEnabled()) {
         return result;
@@ -484,18 +717,32 @@ Tensor& Tensor::operator+=(const Tensor& other) {
         throw std::runtime_error("DType mismatch for addition");
     }
 
-    // FIX: Ensure both tensors are contiguous before in-place operation
-    // Non-contiguous tensors have non-standard memory layouts (e.g., transposed)
-    // and linear iteration would access wrong elements
-    Tensor other_contiguous = other.isContiguous() ? other : other.contiguous();
+    // If RHS aliases LHS storage but has a different view mapping, materialize RHS first
+    // to avoid order-dependent reads.
+    const bool rhs_aliases = (mStorage.get() == other.mStorage.get());
+    const bool rhs_mapping_differs = (mOffset != other.mOffset) || (mStride != other.mStride);
+    Tensor rhs = (rhs_aliases && rhs_mapping_differs) ? other.clone() : other;
 
-    dispatchByDType(dtype(), mStorage->data().get(), mStorage->size(), [&](auto* ptr, size_t n) {
-        using T = std::remove_pointer_t<decltype(ptr)>;
-        const T* other_ptr = static_cast<const T*>(other_contiguous.mStorage->data().get());
+    dispatchByDType(dtype(), mStorage->data().get(), mStorage->size(), [&](auto* base, size_t) {
+        using T = std::remove_pointer_t<decltype(base)>;
+        const T* rhs_base = static_cast<const T*>(rhs.mStorage->data().get());
 
-        for (size_t i = 0; i < n; ++i) {
-            ptr[i] += other_ptr[i];
+        const size_t n = numel();
+        if (n == 0) {
+            return;
         }
+
+        if (isContiguous() && rhs.isContiguous()) {
+            T* lhs_ptr = base + mOffset;
+            const T* rhs_ptr = rhs_base + rhs.mOffset;
+            for (size_t i = 0; i < n; ++i) {
+                lhs_ptr[i] += rhs_ptr[i];
+            }
+            return;
+        }
+
+        forEachOffset2(mShape, mStride, mOffset, rhs.mStride, rhs.mOffset,
+                       [&](size_t off_l, size_t off_r) { base[off_l] += rhs_base[off_r]; });
     });
 
     // Increment version for in-place operation detection
@@ -513,16 +760,30 @@ Tensor& Tensor::operator-=(const Tensor& other) {
         throw std::runtime_error("DType mismatch for subtraction");
     }
 
-    // FIX: Ensure other tensor is contiguous before in-place operation
-    Tensor other_contiguous = other.isContiguous() ? other : other.contiguous();
+    const bool rhs_aliases = (mStorage.get() == other.mStorage.get());
+    const bool rhs_mapping_differs = (mOffset != other.mOffset) || (mStride != other.mStride);
+    Tensor rhs = (rhs_aliases && rhs_mapping_differs) ? other.clone() : other;
 
-    dispatchByDType(dtype(), mStorage->data().get(), mStorage->size(), [&](auto* ptr, size_t n) {
-        using T = std::remove_pointer_t<decltype(ptr)>;
-        const T* other_ptr = static_cast<const T*>(other_contiguous.mStorage->data().get());
+    dispatchByDType(dtype(), mStorage->data().get(), mStorage->size(), [&](auto* base, size_t) {
+        using T = std::remove_pointer_t<decltype(base)>;
+        const T* rhs_base = static_cast<const T*>(rhs.mStorage->data().get());
 
-        for (size_t i = 0; i < n; ++i) {
-            ptr[i] -= other_ptr[i];
+        const size_t n = numel();
+        if (n == 0) {
+            return;
         }
+
+        if (isContiguous() && rhs.isContiguous()) {
+            T* lhs_ptr = base + mOffset;
+            const T* rhs_ptr = rhs_base + rhs.mOffset;
+            for (size_t i = 0; i < n; ++i) {
+                lhs_ptr[i] -= rhs_ptr[i];
+            }
+            return;
+        }
+
+        forEachOffset2(mShape, mStride, mOffset, rhs.mStride, rhs.mOffset,
+                       [&](size_t off_l, size_t off_r) { base[off_l] -= rhs_base[off_r]; });
     });
 
     // Increment version for in-place operation detection
@@ -539,16 +800,30 @@ Tensor& Tensor::operator*=(const Tensor& other) {
         throw std::runtime_error("DType mismatch for multiplication");
     }
 
-    // FIX: Ensure other tensor is contiguous before in-place operation
-    Tensor other_contiguous = other.isContiguous() ? other : other.contiguous();
+    const bool rhs_aliases = (mStorage.get() == other.mStorage.get());
+    const bool rhs_mapping_differs = (mOffset != other.mOffset) || (mStride != other.mStride);
+    Tensor rhs = (rhs_aliases && rhs_mapping_differs) ? other.clone() : other;
 
-    dispatchByDType(dtype(), mStorage->data().get(), mStorage->size(), [&](auto* ptr, size_t n) {
-        using T = std::remove_pointer_t<decltype(ptr)>;
-        const T* other_ptr = static_cast<const T*>(other_contiguous.mStorage->data().get());
+    dispatchByDType(dtype(), mStorage->data().get(), mStorage->size(), [&](auto* base, size_t) {
+        using T = std::remove_pointer_t<decltype(base)>;
+        const T* rhs_base = static_cast<const T*>(rhs.mStorage->data().get());
 
-        for (size_t i = 0; i < n; ++i) {
-            ptr[i] *= other_ptr[i];
+        const size_t n = numel();
+        if (n == 0) {
+            return;
         }
+
+        if (isContiguous() && rhs.isContiguous()) {
+            T* lhs_ptr = base + mOffset;
+            const T* rhs_ptr = rhs_base + rhs.mOffset;
+            for (size_t i = 0; i < n; ++i) {
+                lhs_ptr[i] *= rhs_ptr[i];
+            }
+            return;
+        }
+
+        forEachOffset2(mShape, mStride, mOffset, rhs.mStride, rhs.mOffset,
+                       [&](size_t off_l, size_t off_r) { base[off_l] *= rhs_base[off_r]; });
     });
 
     // Increment version for in-place operation detection
@@ -565,16 +840,30 @@ Tensor& Tensor::operator/=(const Tensor& other) {
         throw std::runtime_error("DType mismatch for division");
     }
 
-    // FIX: Ensure other tensor is contiguous before in-place operation
-    Tensor other_contiguous = other.isContiguous() ? other : other.contiguous();
+    const bool rhs_aliases = (mStorage.get() == other.mStorage.get());
+    const bool rhs_mapping_differs = (mOffset != other.mOffset) || (mStride != other.mStride);
+    Tensor rhs = (rhs_aliases && rhs_mapping_differs) ? other.clone() : other;
 
-    dispatchByDType(dtype(), mStorage->data().get(), mStorage->size(), [&](auto* ptr, size_t n) {
-        using T = std::remove_pointer_t<decltype(ptr)>;
-        const T* other_ptr = static_cast<const T*>(other_contiguous.mStorage->data().get());
+    dispatchByDType(dtype(), mStorage->data().get(), mStorage->size(), [&](auto* base, size_t) {
+        using T = std::remove_pointer_t<decltype(base)>;
+        const T* rhs_base = static_cast<const T*>(rhs.mStorage->data().get());
 
-        for (size_t i = 0; i < n; ++i) {
-            ptr[i] /= other_ptr[i];
+        const size_t n = numel();
+        if (n == 0) {
+            return;
         }
+
+        if (isContiguous() && rhs.isContiguous()) {
+            T* lhs_ptr = base + mOffset;
+            const T* rhs_ptr = rhs_base + rhs.mOffset;
+            for (size_t i = 0; i < n; ++i) {
+                lhs_ptr[i] /= rhs_ptr[i];
+            }
+            return;
+        }
+
+        forEachOffset2(mShape, mStride, mOffset, rhs.mStride, rhs.mOffset,
+                       [&](size_t off_l, size_t off_r) { base[off_l] /= rhs_base[off_r]; });
     });
 
     // Increment version for in-place operation detection
@@ -584,12 +873,24 @@ Tensor& Tensor::operator/=(const Tensor& other) {
 }
 
 Tensor& Tensor::operator+=(const double scalar) {
-    dispatchByDType(dtype(), mStorage->data().get(), mStorage->size(), [&](auto* ptr, size_t n) {
-        using T = std::remove_pointer_t<decltype(ptr)>;
-        T scalar_value = static_cast<T>(scalar);
-        for (size_t i = 0; i < n; ++i) {
-            ptr[i] += scalar_value;
+    const size_t n = numel();
+    if (n == 0) {
+        return *this;
+    }
+
+    dispatchByDType(dtype(), mStorage->data().get(), mStorage->size(), [&](auto* base, size_t) {
+        using T = std::remove_pointer_t<decltype(base)>;
+        const T v = static_cast<T>(scalar);
+
+        if (isContiguous()) {
+            T* ptr = base + mOffset;
+            for (size_t i = 0; i < n; ++i) {
+                ptr[i] += v;
+            }
+            return;
         }
+
+        forEachOffset(mShape, mStride, mOffset, [&](size_t off) { base[off] += v; });
     });
 
     // Increment version for in-place operation detection
@@ -599,12 +900,24 @@ Tensor& Tensor::operator+=(const double scalar) {
 }
 
 Tensor& Tensor::operator-=(const double scalar) {
-    dispatchByDType(dtype(), mStorage->data().get(), mStorage->size(), [&](auto* ptr, size_t n) {
-        using T = std::remove_pointer_t<decltype(ptr)>;
-        T scalar_value = static_cast<T>(scalar);
-        for (size_t i = 0; i < n; ++i) {
-            ptr[i] -= scalar_value;
+    const size_t n = numel();
+    if (n == 0) {
+        return *this;
+    }
+
+    dispatchByDType(dtype(), mStorage->data().get(), mStorage->size(), [&](auto* base, size_t) {
+        using T = std::remove_pointer_t<decltype(base)>;
+        const T v = static_cast<T>(scalar);
+
+        if (isContiguous()) {
+            T* ptr = base + mOffset;
+            for (size_t i = 0; i < n; ++i) {
+                ptr[i] -= v;
+            }
+            return;
         }
+
+        forEachOffset(mShape, mStride, mOffset, [&](size_t off) { base[off] -= v; });
     });
 
     // Increment version for in-place operation detection
@@ -614,12 +927,24 @@ Tensor& Tensor::operator-=(const double scalar) {
 }
 
 Tensor& Tensor::operator*=(const double scalar) {
-    dispatchByDType(dtype(), mStorage->data().get(), mStorage->size(), [&](auto* ptr, size_t n) {
-        using T = std::remove_pointer_t<decltype(ptr)>;
-        T scalar_value = static_cast<T>(scalar);
-        for (size_t i = 0; i < n; ++i) {
-            ptr[i] *= scalar_value;
+    const size_t n = numel();
+    if (n == 0) {
+        return *this;
+    }
+
+    dispatchByDType(dtype(), mStorage->data().get(), mStorage->size(), [&](auto* base, size_t) {
+        using T = std::remove_pointer_t<decltype(base)>;
+        const T v = static_cast<T>(scalar);
+
+        if (isContiguous()) {
+            T* ptr = base + mOffset;
+            for (size_t i = 0; i < n; ++i) {
+                ptr[i] *= v;
+            }
+            return;
         }
+
+        forEachOffset(mShape, mStride, mOffset, [&](size_t off) { base[off] *= v; });
     });
 
     // Increment version for in-place operation detection
@@ -629,12 +954,24 @@ Tensor& Tensor::operator*=(const double scalar) {
 }
 
 Tensor& Tensor::operator/=(const double scalar) {
-    dispatchByDType(dtype(), mStorage->data().get(), mStorage->size(), [&](auto* ptr, size_t n) {
-        using T = std::remove_pointer_t<decltype(ptr)>;
-        T scalar_value = static_cast<T>(scalar);
-        for (size_t i = 0; i < n; ++i) {
-            ptr[i] /= scalar_value;
+    const size_t n = numel();
+    if (n == 0) {
+        return *this;
+    }
+
+    dispatchByDType(dtype(), mStorage->data().get(), mStorage->size(), [&](auto* base, size_t) {
+        using T = std::remove_pointer_t<decltype(base)>;
+        const T v = static_cast<T>(scalar);
+
+        if (isContiguous()) {
+            T* ptr = base + mOffset;
+            for (size_t i = 0; i < n; ++i) {
+                ptr[i] /= v;
+            }
+            return;
         }
+
+        forEachOffset(mShape, mStride, mOffset, [&](size_t off) { base[off] /= v; });
     });
 
     // Increment version for in-place operation detection
@@ -644,7 +981,30 @@ Tensor& Tensor::operator/=(const double scalar) {
 }
 
 Tensor Tensor::operator+(const double scalar) const {
-    Tensor result = clone() += scalar;
+    Tensor result = Tensor::zeros(mShape, dtype(), device());
+    const size_t n = numel();
+    if (n == 0) {
+        return result;
+    }
+
+    dispatchByDType(dtype(), result.mStorage->data().get(), result.mStorage->size(),
+                    [&](auto* out_base, size_t) {
+                        using T = std::remove_pointer_t<decltype(out_base)>;
+                        const T* src_base = static_cast<const T*>(mStorage->data().get());
+                        const T v = static_cast<T>(scalar);
+
+                        if (isContiguous()) {
+                            const T* sp = src_base + mOffset;
+                            for (size_t i = 0; i < n; ++i) {
+                                out_base[i] = sp[i] + v;
+                            }
+                            return;
+                        }
+
+                        size_t di = 0;
+                        forEachOffset(mShape, mStride, mOffset,
+                                      [&](size_t off) { out_base[di++] = src_base[off] + v; });
+                    });
 
     if (requiresGrad() && !autograd::NoGradMode::isEnabled()) {
         auto add_node = std::make_shared<autograd::ScalarAddBackward>();
@@ -664,7 +1024,30 @@ Tensor Tensor::operator+(const double scalar) const {
 }
 
 Tensor Tensor::operator-(const double scalar) const {
-    Tensor result = clone() -= scalar;
+    Tensor result = Tensor::zeros(mShape, dtype(), device());
+    const size_t n = numel();
+    if (n == 0) {
+        return result;
+    }
+
+    dispatchByDType(dtype(), result.mStorage->data().get(), result.mStorage->size(),
+                    [&](auto* out_base, size_t) {
+                        using T = std::remove_pointer_t<decltype(out_base)>;
+                        const T* src_base = static_cast<const T*>(mStorage->data().get());
+                        const T v = static_cast<T>(scalar);
+
+                        if (isContiguous()) {
+                            const T* sp = src_base + mOffset;
+                            for (size_t i = 0; i < n; ++i) {
+                                out_base[i] = sp[i] - v;
+                            }
+                            return;
+                        }
+
+                        size_t di = 0;
+                        forEachOffset(mShape, mStride, mOffset,
+                                      [&](size_t off) { out_base[di++] = src_base[off] - v; });
+                    });
 
     if (requiresGrad() && !autograd::NoGradMode::isEnabled()) {
         auto sub_node = std::make_shared<autograd::ScalarSubBackward>();
@@ -684,7 +1067,30 @@ Tensor Tensor::operator-(const double scalar) const {
 }
 
 Tensor Tensor::operator*(const double scalar) const {
-    Tensor result = clone() *= scalar;
+    Tensor result = Tensor::zeros(mShape, dtype(), device());
+    const size_t n = numel();
+    if (n == 0) {
+        return result;
+    }
+
+    dispatchByDType(dtype(), result.mStorage->data().get(), result.mStorage->size(),
+                    [&](auto* out_base, size_t) {
+                        using T = std::remove_pointer_t<decltype(out_base)>;
+                        const T* src_base = static_cast<const T*>(mStorage->data().get());
+                        const T v = static_cast<T>(scalar);
+
+                        if (isContiguous()) {
+                            const T* sp = src_base + mOffset;
+                            for (size_t i = 0; i < n; ++i) {
+                                out_base[i] = sp[i] * v;
+                            }
+                            return;
+                        }
+
+                        size_t di = 0;
+                        forEachOffset(mShape, mStride, mOffset,
+                                      [&](size_t off) { out_base[di++] = src_base[off] * v; });
+                    });
 
     if (requiresGrad() && !autograd::NoGradMode::isEnabled()) {
         auto mul_node = std::make_shared<autograd::ScalarMulBackward>(scalar);
@@ -704,7 +1110,30 @@ Tensor Tensor::operator*(const double scalar) const {
 }
 
 Tensor Tensor::operator/(const double scalar) const {
-    Tensor result = clone() /= scalar;
+    Tensor result = Tensor::zeros(mShape, dtype(), device());
+    const size_t n = numel();
+    if (n == 0) {
+        return result;
+    }
+
+    dispatchByDType(dtype(), result.mStorage->data().get(), result.mStorage->size(),
+                    [&](auto* out_base, size_t) {
+                        using T = std::remove_pointer_t<decltype(out_base)>;
+                        const T* src_base = static_cast<const T*>(mStorage->data().get());
+                        const T v = static_cast<T>(scalar);
+
+                        if (isContiguous()) {
+                            const T* sp = src_base + mOffset;
+                            for (size_t i = 0; i < n; ++i) {
+                                out_base[i] = sp[i] / v;
+                            }
+                            return;
+                        }
+
+                        size_t di = 0;
+                        forEachOffset(mShape, mStride, mOffset,
+                                      [&](size_t off) { out_base[di++] = src_base[off] / v; });
+                    });
 
     if (requiresGrad() && !autograd::NoGradMode::isEnabled()) {
         auto div_node = std::make_shared<autograd::ScalarDivBackward>(scalar);
@@ -1048,12 +1477,32 @@ Tensor Tensor::slice(int dim, const size_t start, const size_t end) const {
 }
 
 Tensor Tensor::sum() const {
-    // Sum all elements of the tensor
+    // Sum all visible elements in the tensor view (respects stride/offset)
     double sum = 0.0;
-    dispatchByDType(dtype(), mStorage->data().get(), mStorage->size(), [&](auto* ptr, size_t n) {
+    size_t total_elements = numel();
+
+    dispatchByDType(dtype(), mStorage->data().get(), total_elements, [&](auto* ptr, size_t n) {
         using T = std::remove_pointer_t<decltype(ptr)>;
+
+        // Iterate through visible elements using multi-dimensional indexing
+        std::vector<size_t> indices(mShape.size(), 0);
         for (size_t i = 0; i < n; ++i) {
-            sum += static_cast<T>(ptr[i]);
+            // Calculate actual storage offset using strides
+            size_t offset = mOffset;
+            for (size_t dim = 0; dim < indices.size(); ++dim) {
+                offset += indices[dim] * mStride[dim];
+            }
+
+            sum += static_cast<double>(ptr[offset]);
+
+            // Increment multi-dimensional index (row-major order)
+            for (int dim = static_cast<int>(indices.size()) - 1; dim >= 0; --dim) {
+                indices[dim]++;
+                if (indices[dim] < mShape[dim]) {
+                    break;  // No carry needed
+                }
+                indices[dim] = 0;  // Carry to next dimension
+            }
         }
     });
     Tensor result = Tensor::full({1}, sum, dtype(), device());
@@ -1175,10 +1624,32 @@ Tensor Tensor::sum(int dim, bool keepdim) const {
 // ============================================================================
 
 Tensor Tensor::mean() const {
+    // Compute mean of all visible elements in the tensor view (respects stride/offset)
     double total = 0.0;
-    dispatchByDType(dtype(), mStorage->data().get(), mStorage->size(), [&](auto* ptr, size_t n) {
+    size_t total_elements = numel();
+
+    dispatchByDType(dtype(), mStorage->data().get(), total_elements, [&](auto* ptr, size_t n) {
+        using T = std::remove_pointer_t<decltype(ptr)>;
+
+        // Iterate through visible elements using multi-dimensional indexing
+        std::vector<size_t> indices(mShape.size(), 0);
         for (size_t i = 0; i < n; ++i) {
-            total += static_cast<double>(ptr[i]);
+            // Calculate actual storage offset using strides
+            size_t offset = mOffset;
+            for (size_t dim = 0; dim < indices.size(); ++dim) {
+                offset += indices[dim] * mStride[dim];
+            }
+
+            total += static_cast<double>(ptr[offset]);
+
+            // Increment multi-dimensional index
+            for (int dim = static_cast<int>(indices.size()) - 1; dim >= 0; --dim) {
+                indices[dim]++;
+                if (indices[dim] < mShape[dim]) {
+                    break;
+                }
+                indices[dim] = 0;
+            }
         }
     });
     Tensor result = Tensor::full({1}, total / static_cast<double>(numel()), dtype(), device());
@@ -1559,27 +2030,58 @@ Tensor Tensor::log() const {
 // ============================================================================
 
 Tensor Tensor::var() const {
-    // Compute variance: E[(X - μ)²] = E[X²] - μ²
-    // Using two-pass algorithm for numerical stability
+    // Compute variance of visible elements: E[(X - μ)²] = E[X²] - μ²
+    // Using two-pass algorithm for numerical stability (respects stride/offset)
+    size_t total_elements = numel();
 
     // First pass: compute mean
     double mean_val = 0.0;
-    dispatchByDType(dtype(), mStorage->data().get(), mStorage->size(), [&](auto* ptr, size_t n) {
+    dispatchByDType(dtype(), mStorage->data().get(), total_elements, [&](auto* ptr, size_t n) {
+        using T = std::remove_pointer_t<decltype(ptr)>;
+
+        std::vector<size_t> indices(mShape.size(), 0);
         for (size_t i = 0; i < n; ++i) {
-            mean_val += static_cast<double>(ptr[i]);
+            size_t offset = mOffset;
+            for (size_t dim = 0; dim < indices.size(); ++dim) {
+                offset += indices[dim] * mStride[dim];
+            }
+
+            mean_val += static_cast<double>(ptr[offset]);
+
+            for (int dim = static_cast<int>(indices.size()) - 1; dim >= 0; --dim) {
+                indices[dim]++;
+                if (indices[dim] < mShape[dim])
+                    break;
+                indices[dim] = 0;
+            }
         }
     });
-    mean_val /= static_cast<double>(numel());
+    mean_val /= static_cast<double>(total_elements);
 
     // Second pass: compute mean of squared deviations
     double var_val = 0.0;
-    dispatchByDType(dtype(), mStorage->data().get(), mStorage->size(), [&](auto* ptr, size_t n) {
+    dispatchByDType(dtype(), mStorage->data().get(), total_elements, [&](auto* ptr, size_t n) {
+        using T = std::remove_pointer_t<decltype(ptr)>;
+
+        std::vector<size_t> indices(mShape.size(), 0);
         for (size_t i = 0; i < n; ++i) {
-            double diff = static_cast<double>(ptr[i]) - mean_val;
+            size_t offset = mOffset;
+            for (size_t dim = 0; dim < indices.size(); ++dim) {
+                offset += indices[dim] * mStride[dim];
+            }
+
+            double diff = static_cast<double>(ptr[offset]) - mean_val;
             var_val += diff * diff;
+
+            for (int dim = static_cast<int>(indices.size()) - 1; dim >= 0; --dim) {
+                indices[dim]++;
+                if (indices[dim] < mShape[dim])
+                    break;
+                indices[dim] = 0;
+            }
         }
     });
-    var_val /= static_cast<double>(numel());
+    var_val /= static_cast<double>(total_elements);
 
     return Tensor::full({1}, var_val, dtype(), device());
 }
@@ -1599,12 +2101,34 @@ Tensor Tensor::var(int dim, bool keepdim) const {
 // ============================================================================
 
 Tensor Tensor::max() const {
+    // Find maximum of visible elements in the tensor view (respects stride/offset)
     double max_val = std::numeric_limits<double>::lowest();
-    dispatchByDType(dtype(), mStorage->data().get(), mStorage->size(), [&](auto* ptr, size_t n) {
+    size_t total_elements = numel();
+
+    dispatchByDType(dtype(), mStorage->data().get(), total_elements, [&](auto* ptr, size_t n) {
+        using T = std::remove_pointer_t<decltype(ptr)>;
+
+        // Iterate through visible elements using multi-dimensional indexing
+        std::vector<size_t> indices(mShape.size(), 0);
         for (size_t i = 0; i < n; ++i) {
-            double val = static_cast<double>(ptr[i]);
+            // Calculate actual storage offset using strides
+            size_t offset = mOffset;
+            for (size_t dim = 0; dim < indices.size(); ++dim) {
+                offset += indices[dim] * mStride[dim];
+            }
+
+            double val = static_cast<double>(ptr[offset]);
             if (val > max_val)
                 max_val = val;
+
+            // Increment multi-dimensional index
+            for (int dim = static_cast<int>(indices.size()) - 1; dim >= 0; --dim) {
+                indices[dim]++;
+                if (indices[dim] < mShape[dim]) {
+                    break;
+                }
+                indices[dim] = 0;
+            }
         }
     });
     Tensor result = Tensor::full({1}, max_val, dtype(), device());
@@ -1721,12 +2245,34 @@ Tensor Tensor::max(int dim, bool keepdim) const {
 // ============================================================================
 
 Tensor Tensor::min() const {
+    // Find minimum of visible elements in the tensor view (respects stride/offset)
     double min_val = std::numeric_limits<double>::max();
-    dispatchByDType(dtype(), mStorage->data().get(), mStorage->size(), [&](auto* ptr, size_t n) {
+    size_t total_elements = numel();
+
+    dispatchByDType(dtype(), mStorage->data().get(), total_elements, [&](auto* ptr, size_t n) {
+        using T = std::remove_pointer_t<decltype(ptr)>;
+
+        // Iterate through visible elements using multi-dimensional indexing
+        std::vector<size_t> indices(mShape.size(), 0);
         for (size_t i = 0; i < n; ++i) {
-            double val = static_cast<double>(ptr[i]);
+            // Calculate actual storage offset using strides
+            size_t offset = mOffset;
+            for (size_t dim = 0; dim < indices.size(); ++dim) {
+                offset += indices[dim] * mStride[dim];
+            }
+
+            double val = static_cast<double>(ptr[offset]);
             if (val < min_val)
                 min_val = val;
+
+            // Increment multi-dimensional index
+            for (int dim = static_cast<int>(indices.size()) - 1; dim >= 0; --dim) {
+                indices[dim]++;
+                if (indices[dim] < mShape[dim]) {
+                    break;
+                }
+                indices[dim] = 0;
+            }
         }
     });
     Tensor result = Tensor::full({1}, min_val, dtype(), device());
@@ -1850,12 +2396,23 @@ Tensor Tensor::dot(const Tensor& other) const {
         throw std::runtime_error("Dot product requires matching sizes");
     }
 
+    // Dot product respecting stride/offset for 1D tensors
     double result = 0.0;
-    dispatchByDType(dtype(), mStorage->data().get(), mStorage->size(), [&](auto* ptr, size_t n) {
+    size_t n = mShape[0];
+
+    dispatchByDType(dtype(), mStorage->data().get(), n, [&](auto* ptr, size_t) {
         using T = std::remove_pointer_t<decltype(ptr)>;
         const T* other_ptr = static_cast<const T*>(other.mStorage->data().get());
+
+        // Use strides to access elements (handles views like slices)
+        size_t stride_a = mStride[0];
+        size_t stride_b = other.mStride[0];
+        size_t offset_a = mOffset;
+        size_t offset_b = other.mOffset;
+
         for (size_t i = 0; i < n; ++i) {
-            result += static_cast<double>(ptr[i]) * static_cast<double>(other_ptr[i]);
+            result += static_cast<double>(ptr[offset_a + i * stride_a]) *
+                      static_cast<double>(other_ptr[offset_b + i * stride_b]);
         }
     });
 
