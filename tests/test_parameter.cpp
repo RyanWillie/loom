@@ -77,26 +77,9 @@ TEST_F(ParameterTest, UniformCreatesCorrectShape) {
 // ============================================================================
 
 TEST_F(ParameterTest, KaimingInitializationVariance) {
-    // TODO(human): Test that Kaiming initialization produces correct variance
-    //
+    // Test that Kaiming initialization produces correct variance.
     // Theory: For weights ~ N(0, std²) where std = sqrt(2 / fan_in),
     //         the variance should be Var(weights) = 2 / fan_in
-    //
-    // Test approach:
-    // 1. Create a parameter with known shape, e.g., {100, 50}
-    //    fan_in = 100, so expected_variance = 2 / 100 = 0.02
-    // 2. Access the data: auto acc = param.data().accessor<float, 2>();
-    // 3. Compute empirical mean and variance over all elements
-    // 4. Check that:
-    //    - Mean is close to 0 (within ±0.01 or so)
-    //    - Variance is close to expected_variance (within ±10% tolerance)
-    //
-    // Formulas:
-    //   mean = sum(x_i) / n
-    //   variance = sum((x_i - mean)²) / n
-    //
-    // Use EXPECT_NEAR(actual, expected, tolerance) for floating point comparison
-
     Parameter param = Parameter::kaiming({100, 50}, DType::FLOAT32);
 
     auto mean = param.data().mean().item();
@@ -107,19 +90,9 @@ TEST_F(ParameterTest, KaimingInitializationVariance) {
 }
 
 TEST_F(ParameterTest, XavierInitializationVariance) {
-    // TODO(human): Test that Xavier initialization produces correct variance
-    //
+    // Test that Xavier initialization produces correct variance.
     // Theory: For weights ~ N(0, std²) where std = sqrt(1 / fan_in),
     //         the variance should be Var(weights) = 1 / fan_in
-    //
-    // Test approach (same as Kaiming):
-    // 1. Create parameter with shape {100, 50}
-    //    fan_in = 100, so expected_variance = 1 / 100 = 0.01
-    // 2. Compute empirical mean and variance
-    // 3. Validate both are close to theoretical values
-    //
-    // The key difference from Kaiming: expected variance is 1/fan_in instead of 2/fan_in
-
     Parameter param = Parameter::xavier({100, 50}, DType::FLOAT32);
     auto mean = param.data().mean().item();
     auto variance = param.data().var().item();

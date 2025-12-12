@@ -41,23 +41,6 @@ void ConsoleMonitor::onBatchComplete(size_t batch, size_t total_batches,
 }
 
 void ConsoleMonitor::onEpochEnd(const EpochMetrics& metrics) {
-    // TODO(human): Implement epoch end display
-    // This should create a nice formatted summary table showing:
-    // - Epoch number and time taken
-    // - Train vs Test metrics in a table format
-    // - Loss and Accuracy rows
-    // - Samples per second throughput
-    //
-    // Hint: Use Logger::getInstance(mLoggerName) and formatDuration()
-    // Example table format:
-    //   Epoch 1 Summary (took 00:02:45)
-    //   ┌─────────┬───────────┬──────────┐
-    //   │ Metric  │   Train   │   Test   │
-    //   ├─────────┼───────────┼──────────┤
-    //   │ Loss    │  0.3421   │  0.4123  │
-    //   │ Acc     │  89.20%   │  87.40%  │
-    //   │ Speed   │ 1247 samples/sec     │
-    //   └─────────┴───────────┴──────────┘
     auto& logger = Logger::getInstance(mLoggerName);
     logger.info("Epoch {} Summary (took {})", metrics.epoch,
                 formatDuration(metrics.epoch_time_seconds));

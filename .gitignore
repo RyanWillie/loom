@@ -61,6 +61,10 @@ _deps/
 *~
 .DS_Store
 
+# Language Server / Clang cache
+.cache/
+.clangd/
+
 # Logs
 logs/*.txt
 
